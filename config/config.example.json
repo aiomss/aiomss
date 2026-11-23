@@ -23,5 +23,20 @@
       "quota": ""
     }
   ],
-  "hosts": []
+  "hosts": [],
+  "workbench": {
+    "mode": "managed",
+    "cmdb": {
+      "name": "生产 CMDB（只读账号）",
+      "url": "",
+      "token": "",
+      "note": "GET 返回主机数组；字段：机房 / 业务线 / 应用等级 / 组织 / 维保到期"
+    },
+    "monitor": {
+      "name": "监控平台（只读账号）",
+      "url": "",
+      "token": "",
+      "note": "GET 返回告警数组；仅查询，不下发任何写操作"
+    }
+  }
 }

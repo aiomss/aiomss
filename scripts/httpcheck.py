@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from fastapi.testclient import TestClient       # noqa: E402
-from backend import agent, auth                # noqa: E402
+from backend import agent, auth, store         # noqa: E402
 from backend.app import app                    # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -270,6 +270,119 @@ finally:
     agent.store.get_profile = _o_gp
     agent.store.get_host = _o_gh
 print("小节结果: %d 通过 / %d 失败" % (PASS - S7_PASS, FAIL - S7_FAIL))
+
+S8_PASS, S8_FAIL = PASS, FAIL
+print("=== 8. 运维工作台接口（指标来自纳管主机，不写死示例值）===")
+anon = TestClient(app, follow_redirects=False)
+check("未登录访问工作台接口被拦截",
+      anon.get("/api/workbench/overview").status_code == 401)
+check("未登录触发采集被拦截",
+      anon.post("/api/workbench/collect", json={}).status_code == 401)
+managed = len(store.load().get("hosts", []))
+r = c.get("/api/workbench/overview", cookies=CK2)
+ov = r.json() if r.status_code == 200 else {}
+metrics = {m["key"]: m["value"] for m in ov.get("metrics", [])}
+check("总览四项指标均返回", r.status_code == 200 and len(metrics) == 4, metrics)
+check("主机总数等于纳管主机数", metrics.get("hosts") == managed and ov.get("managed") == managed,
+      (metrics, managed))
+check("覆盖率按纳管主机与快照数算出",
+      metrics.get("coverage") == (round(100.0 * ov.get("monitored", 0) / managed, 1)
+                                  if managed else 0), (metrics, ov.get("monitored")))
+check("模式为 managed（无演示数据）", ov.get("mode") == "managed", ov.get("mode"))
+r = c.get("/api/workbench/regions", cookies=CK2)
+rg = r.json() if r.status_code == 200 else {}
+check("地域主机数合计等于纳管主机数",
+      sum(x["hosts"] for x in rg.get("rows", [])) == managed, rg.get("rows"))
+check("地域告警合计等于总览告警数",
+      sum(x["alerts"] for x in rg.get("rows", [])) == metrics.get("alerts"), rg.get("rows"))
+r = c.get("/api/workbench/quality", params={"page": 1, "size": 1}, cookies=CK2)
+check("资产质量合计与总览一致",
+      r.json().get("total") == metrics.get("quality"), r.text[:120])
+r = c.get("/api/workbench/quality", params={"dimension": "biz", "page": 1, "size": 5},
+          cookies=CK2)
+qu = r.json() if r.status_code == 200 else {}
+check("资产质量按维度下钻且不越页",
+      len(qu.get("rows", [])) <= 5 and qu.get("total") <= metrics.get("quality", 0),
+      (qu.get("total"), len(qu.get("rows", []))))
+check("下钻记录只属于所选维度",
+      all(x["dimension"] == "biz" for x in qu.get("rows", [])), qu.get("rows", [])[:1])
+check("下钻记录是纳管主机而非虚构资产",
+      all(x.get("host") and "ip" in x for x in qu.get("rows", [])), qu.get("rows", [])[:1])
+r = c.get("/api/workbench/alerts",
+          params={"resource": "cpu", "page": 1, "size": 5}, cookies=CK2)
+al = r.json() if r.status_code == 200 else {}
+check("24 小时告警按资源类型过滤且不越页",
+      len(al.get("rows", [])) <= 5 and al.get("total") <= metrics.get("alerts", 0),
+      (al.get("total"), len(al.get("rows", []))))
+check("告警记录关联纳管主机",
+      all(a.get("host") for a in al.get("rows", [])), al.get("rows", [])[:1])
+r = c.get("/api/workbench/plugins", cookies=CK2)
+check("插件清单可读取", r.status_code == 200 and len(r.json().get("plugins", [])) == 3,
+      r.text[:120])
+r = c.post("/api/workbench/plugin/run", cookies=CK2,
+           json={"plugin_id": "coverage_check"})
+pl = r.json() if r.status_code == 200 else {}
+check("覆盖率插件行数与地域数一致",
+      pl.get("ok") and len(pl.get("rows", [])) == len(rg.get("rows", [])), pl)
+r = c.get("/api/workbench/sources", cookies=CK2)
+_src_json = r.json() if r.status_code == 200 else {}
+check("数据源配置为 managed", _src_json.get("mode") == "managed", _src_json.get("mode"))
+check("数据源配置不回传 Token 明文", r.status_code == 200
+      and all("token" not in (_src_json.get(k) or {}) for k in ("cmdb", "monitor")),
+      _src_json)
+check("工作台审计写入类型 WORKBENCH",
+      c.post("/api/workbench/audit", cookies=CK2,
+             json={"action": "httpcheck 工作台只读检查"}).json().get("ok") is True)
+
+# 本次新增：时间窗可配置 + 实时采集指标（未登录拦截 + 登录可用）
+anon_w = TestClient(app, follow_redirects=False)
+check("未登录访问实时指标接口被拦截",
+      anon_w.get("/api/workbench/metrics").status_code == 401)
+check("未登录访问时间窗列表被拦截",
+      anon_w.get("/api/workbench/windows").status_code == 401)
+r = c.get("/api/workbench/windows", cookies=CK2)
+_wj = r.json() if r.status_code == 200 else {}
+check("时间窗提供 5 档（含自定义）",
+      r.status_code == 200 and [w["key"] for w in _wj.get("windows", [])] ==
+      ["5m", "15m", "30m", "1h", "custom"] and _wj.get("default") == "1h", _wj)
+r = c.get("/api/workbench/metrics", cookies=CK2)
+_mj = r.json() if r.status_code == 200 else {}
+check("实时指标接口返回纳管主机的采集快照",
+      r.status_code == 200 and isinstance(_mj.get("rows"), list)
+      and len(_mj["rows"]) <= managed, _mj)
+check("指标行含 CPU/内存/磁盘/网络错误字段",
+      all(all(k in row for k in ("cpu", "mem", "disk", "net_errors"))
+          for row in _mj.get("rows", [])), _mj.get("rows", [])[:1])
+for _w in ("5m", "30m", "1h"):
+    r = c.get("/api/workbench/alerts", params={"window": _w, "page": 1, "size": 5},
+              cookies=CK2)
+    _aj = r.json() if r.status_code == 200 else {}
+    check("告警接口接受窗口参数 " + _w,
+          r.status_code == 200 and _aj.get("window") == _w
+          and _aj.get("summary") is not None, _aj)
+r = c.get("/api/workbench/alerts",
+          params={"window": "custom", "start": "2020-01-01T00:00",
+                  "end": "2020-01-02T00:00"}, cookies=CK2)
+_cj = r.json() if r.status_code == 200 else {}
+check("自定义窗口返回 0 告警（历史区间无数据）",
+      r.status_code == 200 and _cj.get("total") == 0, _cj)
+r = c.get("/api/workbench/overview", params={"window": "5m"}, cookies=CK2)
+check("总览告警标签跟随所选窗口",
+      r.status_code == 200 and "5 分钟" in json.dumps(r.json(), ensure_ascii=False),
+      r.text[:160])
+# 资产台账：已填参数能被读取显示（不是只有待治理项）
+check("未登录访问资产台账被拦截",
+      anon_w.get("/api/workbench/assets").status_code == 401)
+r = c.get("/api/workbench/assets", cookies=CK2)
+_aj2 = r.json() if r.status_code == 200 else {}
+check("资产台账返回全部纳管主机",
+      r.status_code == 200 and _aj2.get("total") == managed
+      and len(_aj2.get("rows", [])) == managed, _aj2)
+check("台账行含地域/机房/业务线/应用等级/组织/维保字段",
+      all(all(k in row for k in ("region", "room", "biz_line", "app_level",
+                                 "org", "maintenance", "maintenance_state", "monitored"))
+          for row in _aj2.get("rows", [])), _aj2.get("rows", [])[:1])
+print("小节结果: %d 通过 / %d 失败" % (PASS - S8_PASS, FAIL - S8_FAIL))
 
 print()
 print("结果: %d 通过 / %d 失败" % (PASS, FAIL))

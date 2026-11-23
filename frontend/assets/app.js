@@ -1185,6 +1185,8 @@ $('btnAddHost').onclick = () => {
   $('modalHost').querySelector('.modal-head b').textContent = '添加 Linux 主机';
   $('hName').value = ''; $('hHost').value = ''; $('hPort').value = '22';
   $('hUser').value = 'root'; $('hPass').value = ''; $('hNote').value = '';
+  $('hRegion').value = ''; $('hRoom').value = ''; $('hBiz').value = '';
+  $('hLevel').value = ''; $('hOrg').value = ''; $('hMaintenance').value = '';
   $('hTestMsg').textContent = ''; $('hTestMsg').className = 'test-msg';
   openModal('modalHost');
 };
@@ -1198,6 +1200,9 @@ function editHost(h) {
   $('hPass').value = '';                                   // 安全起见留空，不回显密码
   $('hPass').placeholder = '留空表示不修改原密码';
   $('hNote').value = h.note || '';
+  $('hRegion').value = h.region || ''; $('hRoom').value = h.room || '';
+  $('hBiz').value = h.biz_line || ''; setLevelValue(h.app_level || '');
+  $('hOrg').value = h.org || ''; $('hMaintenance').value = h.maintenance || '';
   $('hTestMsg').textContent = ''; $('hTestMsg').className = 'test-msg';
   openModal('modalHost');
 }
@@ -1208,6 +1213,9 @@ function hostPayload() {
     host: $('hHost').value.trim(), port: parseInt($('hPort').value || '22', 10),
     username: $('hUser').value.trim(), password: $('hPass').value,
     note: $('hNote').value.trim(),
+    region: $('hRegion').value.trim(), room: $('hRoom').value.trim(),
+    biz_line: $('hBiz').value.trim(), app_level: $('hLevel').value.trim(),
+    org: $('hOrg').value.trim(), maintenance: $('hMaintenance').value,
   };
 }
 $('btnTestHost').onclick = async () => {
@@ -1219,9 +1227,28 @@ $('btnTestHost').onclick = async () => {
     msg.className = 'test-msg ' + (r.ok ? 'ok' : 'bad');
   } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'test-msg bad'; }
 };
+// 应用等级：四级可选，从一般到核心；兼容历史自定义值
+const APP_LEVELS = ['一般', '重要', '关键', '核心'];
+function initLevelSelect() {
+  const sel = $('hLevel');
+  sel.innerHTML = '<option value="">未分级</option>' +
+    APP_LEVELS.map(x => '<option value="' + x + '">' + x + '</option>').join('');
+}
+function setLevelValue(val) {
+  const sel = $('hLevel');
+  if (val && !APP_LEVELS.includes(val) &&
+      !Array.from(sel.options).some(o => o.value === val)) {
+    const o = document.createElement('option');
+    o.value = val; o.textContent = val + '（历史值）';
+    sel.appendChild(o);
+  }
+  sel.value = val || '';
+}
 $('btnSaveHost').onclick = async () => {
   const p = hostPayload();
-  if (!p.host || !p.username || !p.password) { alert('地址、用户名、密码必填'); return; }
+  // 修改主机时密码留空表示不修改（与输入框提示一致），只有新增才强制要求密码
+  if (!p.host || !p.username) { alert('地址、用户名必填'); return; }
+  if (!EDITING_HOST_ID && !p.password) { alert('新增主机时密码必填'); return; }
   const r = await jsonPost('/api/hosts', p);
   if (r.ok) {
     closeModal('modalHost');
@@ -1231,7 +1258,11 @@ $('btnSaveHost').onclick = async () => {
     S.activeHost = r.id;
     await loadState();
     await selectHost(r.id);
-    setRunStatus('主机已保存。');
+    // 主机参数改动（地域/机房/维保等）立即反映到工作台的资产质量与地域维度
+    if (typeof wbLoad === 'function' && !$('workbenchView').classList.contains('hidden')) {
+      await wbLoad();
+    }
+    setRunStatus('主机已保存。资产维度已同步；监控指标需重新点「采集监控数据」才会更新。');
   }
 };
 
@@ -1780,6 +1811,485 @@ $('btnAuditAsk').onclick = () => {
   }, 420);
 };
 
+/* ============================================================
+   运维工作台（文章融合）：总览 / 地域 / 资产质量 / 监控日清 / 插件
+   与既有 SSH 终端、AI 抽屉、SFTP、审计完全并存，互不改写
+   ============================================================ */
+const WB = { data: {}, drill: null, plugin: '' };
+const QUALITY_COLS = [
+  { key: 'host', label: '纳管主机' }, { key: 'ip', label: '地址' },
+  { key: 'region', label: '地域' }, { key: 'dimension_label', label: '治理维度' },
+  { key: 'room', label: '机房' }, { key: 'biz_line', label: '业务线' },
+  { key: 'app_level', label: '应用等级' }, { key: 'org', label: '组织' },
+  { key: 'maintenance', label: '维保' }, { key: 'monitored', label: '监控' },
+  { key: 'detail', label: '问题说明' },
+];
+const ALERT_COLS = [
+  { key: 'time', label: '时间' }, { key: 'level', label: '级别' },
+  { key: 'resource', label: '资源' }, { key: 'host', label: '主机 / 对象' },
+  { key: 'region', label: '地域' }, { key: 'metric', label: '指标' },
+  { key: 'value', label: '当前值' }, { key: 'message', label: '内容' },
+];
+
+function wbLog(action) {
+  jsonPost('/api/workbench/audit', { action }).catch(() => {});
+}
+
+function setView(v, doLog) {
+  const wb = v === 'workbench';
+  $('termPanel').classList.toggle('hidden', wb);
+  $('workbenchView').classList.toggle('hidden', !wb);
+  $('btnViewTerminal').classList.toggle('active', !wb);
+  $('btnViewWorkbench').classList.toggle('active', wb);
+  $('btnViewTerminal').setAttribute('aria-selected', wb ? 'false' : 'true');
+  $('btnViewWorkbench').setAttribute('aria-selected', wb ? 'true' : 'false');
+  try { localStorage.setItem('aoc_view_v1', v); } catch (e) { /* ignore */ }
+  if (wb) {
+    wbLoad();
+    if (doLog !== false) wbLog('打开运维工作台总览');
+  } else {
+    fitTermSoon(120);                 // 终端从隐藏恢复后重新计算列数
+  }
+}
+$('btnViewTerminal').onclick = () => setView('terminal');
+$('btnViewWorkbench').onclick = () => setView('workbench');
+$('wbRefresh').onclick = async () => {
+  const btn = $('wbRefresh'), msg = $('wbCollectMsg'), old = btn.textContent;
+  btn.disabled = true; btn.textContent = '⟳ 刷新中…';
+  msg.textContent = '正在重新读取本地快照与纳管主机配置…';
+  const start = Date.now();
+  try {
+    await wbLoad();
+    const cost = ((Date.now() - start) / 1000).toFixed(1);
+    msg.textContent = '✅ 已刷新（耗时 ' + cost + 's）· ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) +
+      '。仅重读本地数据；要更新 CPU / 内存等监控指标请点「采集监控数据」。';
+    wbLog('刷新运维工作台数据');
+    setRunStatus('工作台数据已刷新。');
+  } catch (e) {
+    msg.textContent = '❌ 刷新失败：' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+};
+
+$('wbCollect').onclick = async () => {
+  const btn = $('wbCollect'), msg = $('wbCollectMsg');
+  btn.disabled = true;
+  msg.textContent = '正在从已纳管主机采集监控数据（只读命令，每台约 1-3 秒）…';
+  try {
+    const r = await jsonPost('/api/workbench/collect', {});
+    const bad = (r.results || []).filter(x => !x.ok).map(x => x.host + ': ' + x.error);
+    msg.textContent = '采集完成：共 ' + r.total + ' 台，成功 ' + r.success +
+      ' 台，失败 ' + r.failed + ' 台 · ' + r.at + (bad.length ? (' · ' + bad.join('；')) : '');
+    msg.title = msg.textContent;
+    wbLog('采集纳管主机监控数据');
+    await wbLoad();
+    setRunStatus('监控数据已采集，工作台指标已按真实数据重算。');
+  } catch (e) {
+    msg.textContent = '采集失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+function wbWindowQuery() {
+  const w = $('wbWindow').value || '1h';
+  if (w === 'custom') {
+    return 'window=custom&start=' + encodeURIComponent($('wbStart').value || '') +
+      '&end=' + encodeURIComponent($('wbEnd').value || '');
+  }
+  return 'window=' + encodeURIComponent(w);
+}
+function wbWindowParams() {
+  const q = wbWindowQuery();
+  const out = {};
+  q.split('&').forEach(p => { const kv = p.split('='); out[kv[0]] = decodeURIComponent(kv[1] || ''); });
+  return out;
+}
+async function wbLoad() {
+  try {
+    const wq = wbWindowQuery();
+    const [ov, rg, qu, al, mt, as, pl, sr] = await Promise.all([
+      api('/api/workbench/overview?' + wq),
+      api('/api/workbench/regions?' + wq),
+      api('/api/workbench/quality?dimension=&page=1&size=1'),
+      api('/api/workbench/alerts?page=1&size=5&' + wq),
+      api('/api/workbench/metrics'),
+      api('/api/workbench/assets'),
+      api('/api/workbench/plugins'),
+      api('/api/workbench/sources'),
+    ]);
+    WB.data = { ov, rg, qu, al, mt, as, pl, sr };
+    wbRenderKpis(ov); wbRenderRegions(rg); wbRenderQuality(qu);
+    wbRenderAssets(as); wbRenderMetrics(mt); wbRenderAlerts(al);
+    wbRenderPlugins(pl); wbRenderSources(sr);
+    $('wbSourceTag').textContent = '数据源：已纳管 ' + ov.managed + ' 台 · 有监控快照 ' +
+      ov.monitored + ' 台 · 更新于 ' + ov.generated_at;
+    $('wbSourceTag').title = ov.note || '';
+  } catch (e) {
+    $('wbKpis').innerHTML = '';
+    $('wbKpis').appendChild(el('div', 'wb-note', '工作台数据读取失败：' + e.message));
+  }
+}
+
+function wbRenderAssets(as) {
+  const tb = $('wbAssetRows'); tb.innerHTML = '';
+  $('wbAssetsTotal').textContent = (as.total || 0) + ' 台已纳管主机';
+  (as.rows || []).forEach(a => {
+    const tr = el('tr');
+    const td = (text, cls) => tr.appendChild(el('td', cls || '',
+      text === null || text === undefined || text === '' ? '—' : String(text)));
+    td(a.host); td(a.region); td(a.room); td(a.biz_line); td(a.app_level);
+    td(a.org);
+    td(a.maintenance || '—', a.maintenance_state === '已到期' ? 'wb-metric-hi' : '');
+    td(a.monitored);
+    tb.appendChild(tr);
+  });
+  if (!(as.rows || []).length) {
+    const tr = el('tr'), td = el('td', 'wb-empty',
+      '暂无纳管主机。请先在左侧主机列表添加主机并填写资产字段。');
+    td.colSpan = 8; tr.appendChild(td); tb.appendChild(tr);
+  }
+  $('wbAssetNote').textContent = as.note || '';
+}
+
+function wbRenderMetrics(mt) {
+  const tb = $('wbMetricRows'); tb.innerHTML = '';
+  (mt.rows || []).forEach(m => {
+    const tr = el('tr');
+    const td = (text, cls) => { const x = el('td', cls || '', text === null || text === undefined ? '—' : String(text)); tr.appendChild(x); return x; };
+    td(m.host); td(m.region);
+    td(m.cpu === null || m.cpu === undefined ? '—' : m.cpu + '%',
+       m.cpu >= 90 ? 'wb-metric-hi' : m.cpu >= 85 ? 'wb-metric-mid' : '');
+    td(m.mem === null || m.mem === undefined ? '—' : m.mem + '%',
+       m.mem >= 90 ? 'wb-metric-hi' : m.mem >= 85 ? 'wb-metric-mid' : '');
+    td(m.disk === null || m.disk === undefined ? '—' : m.disk + '%',
+       m.disk >= 90 ? 'wb-metric-hi' : m.disk >= 85 ? 'wb-metric-mid' : '');
+    td(m.net_errors); td(m.at || '—');
+    tb.appendChild(tr);
+  });
+  if (!(mt.rows || []).length) {
+    const tr = el('tr'), td = el('td', 'wb-empty',
+      '暂无采集快照。点上方「⌁ 采集监控数据」从纳管主机只读获取指标。');
+    td.colSpan = 7; tr.appendChild(td); tb.appendChild(tr);
+  }
+  $('wbMetricsAt').textContent = mt.updated_at ? ('更新于 ' + mt.updated_at) : '';
+  $('wbMetricsNote').textContent = mt.note || '';
+}
+
+// 时间窗切换：立即重绘工作台；自定义模式显示起止输入
+function wbBindWindow() {
+  const sel = $('wbWindow');
+  const apply = () => {
+    $('wbCustomRange').classList.toggle('hidden', sel.value !== 'custom');
+    wbLoad();
+    wbLog('切换监控时间窗：' + (sel.selectedOptions[0] || {}).textContent);
+  };
+  sel.onchange = apply;
+  $('wbStart').onchange = apply;
+  $('wbEnd').onchange = apply;
+}
+
+function wbRenderKpis(ov) {
+  const box = $('wbKpis'); box.innerHTML = '';
+  const accent = { hosts: 'var(--primary)', coverage: 'var(--ok)',
+                   alerts: 'var(--danger)', quality: 'var(--warn)' };
+  ov.metrics.forEach(m => {
+    const c = el('div', 'wb-kpi clickable');
+    c.style.setProperty('--accent', accent[m.key] || 'var(--primary)');
+    c.title = m.hint;
+    c.appendChild(el('div', 'wb-kpi-label', m.label));
+    const v = el('div', 'wb-kpi-value', String(m.value));
+    v.appendChild(el('small', '', m.unit)); c.appendChild(v);
+    c.appendChild(el('div', 'wb-kpi-hint', m.hint));
+    c.onclick = () => {
+      if (m.key === 'alerts') wbDrillAlerts({}, 1);
+      else if (m.key === 'quality') wbDrillQuality('', 1);
+      else wbRunPlugin(m.key === 'coverage' ? 'coverage_check' : 'asset_governance');
+      wbLog('查看总览指标「' + m.label + '」');
+    };
+    box.appendChild(c);
+  });
+}
+
+function wbRenderRegions(rg) {
+  const tb = $('wbRegionRows'); tb.innerHTML = '';
+  rg.rows.forEach(r => {
+    const tr = el('tr');
+    [r.name, String(r.hosts), String(r.monitored), r.rate + '%'].forEach(t => tr.appendChild(el('td', '', t)));
+    const td = el('td');
+    const b = el('button', 'wb-link', String(r.alerts));
+    b.title = '查看该地域所选时间窗内的告警';
+    b.onclick = () => { wbDrillAlerts({ region: r.name }, 1); wbLog('下钻地域告警：' + r.name); };
+    td.appendChild(b); tr.appendChild(td); tb.appendChild(tr);
+  });
+  const tr = el('tr');
+  ['合计', String(rg.total.hosts), String(rg.total.monitored),
+    rg.total.rate + '%', String(rg.total.alerts)].forEach(t => {
+    const td = el('td', '', t); td.style.fontWeight = '700'; tr.appendChild(td);
+  });
+  tb.appendChild(tr);
+  $('wbRegionNote').textContent = rg.note;
+  const th = $('wbRegionAlertTh');
+  if (th) th.textContent = '告警数（' + (rg.window_label || '所选窗口') + '）';
+}
+
+function wbRenderQuality(qu) {
+  const box = $('wbQualityList'); box.innerHTML = '';
+  const _qtotal = qu.summary.reduce((a, b) => a + b.count, 0);
+  $('wbQualityTotal').textContent = _qtotal === 0
+    ? '0 项待治理 · 字段已填齐（已填值见上方台账）'
+    : _qtotal + ' 项待治理 · 点击下钻到具体主机';
+  const max = Math.max.apply(null, qu.summary.map(x => x.count)) || 1;
+  qu.summary.forEach(d => {
+    const it = el('div', 'wb-quality-item');
+    const lab = el('div', 'wb-q-label', d.label);
+    lab.appendChild(el('small', '', d.hint)); it.appendChild(lab);
+    it.appendChild(el('div', 'wb-q-count', String(d.count)));
+    const track = el('div', 'wb-q-track');
+    const fill = el('div', 'wb-q-fill');
+    fill.style.width = Math.round(d.count / max * 100) + '%';
+    track.appendChild(fill); it.appendChild(track);
+    it.title = d.hint;
+    it.onclick = () => { wbDrillQuality(d.key, 1); wbLog('下钻资产质量维度：' + d.label); };
+    box.appendChild(it);
+  });
+  $('wbQualityNote').textContent = qu.note;
+}
+
+function wbRenderAlerts(al) {
+  const bars = $('wbResourceBars'); bars.innerHTML = '';
+  const total = al.summary.reduce((a, b) => a + b.count, 0) || 1;
+  al.summary.forEach(r => {
+    const top = el('div', 'wb-bar-top');
+    top.appendChild(el('span', '', r.label));
+    top.appendChild(el('b', '', r.count + ' 条'));
+    const track = el('div', 'wb-bar-track');
+    const fill = el('div', 'wb-bar-fill');
+    fill.style.width = Math.round(r.count / total * 100) + '%';
+    track.appendChild(fill);
+    bars.appendChild(top); bars.appendChild(track);
+  });
+  const tb = $('wbAlertRows'); tb.innerHTML = '';
+  al.rows.slice(0, 5).forEach(a => {
+    const tr = el('tr');
+    [a.time, a.level, a.resource, a.host, a.message].forEach((t, i) => {
+      const td = el('td', '', String(t));
+      if (i === 1) {
+        td.style.fontWeight = '700';
+        td.style.color = t === '严重' ? 'var(--danger)'
+          : t === '警告' ? 'var(--warn)' : 'var(--muted)';
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  if (!al.rows.length) {
+    const tr = el('tr'); const td = el('td', '', '该口径下暂无告警');
+    td.colSpan = 5; td.className = 'wb-empty'; tr.appendChild(td); tb.appendChild(tr);
+  }
+  $('wbAlertNote').textContent = '共 ' + al.total + ' 条 · ' + al.note;
+  $('wbWindowLabel').textContent = al.window_label || '';
+  $('wbAlertMore').onclick = () => { wbDrillAlerts({}, 1); wbLog('查看全部所选时间窗告警'); };
+}
+
+function wbRenderPlugins(pl) {
+  const box = $('wbPlugins'); box.innerHTML = '';
+  (pl.plugins || []).forEach(p => {
+    const c = el('div', 'wb-plugin' + (WB.plugin === p.id ? ' on' : ''));
+    c.appendChild(el('b', '', p.name));
+    c.appendChild(el('span', '', p.desc));
+    const b = el('button', 'btn tiny', '运行分析');
+    b.onclick = () => wbRunPlugin(p.id);
+    c.appendChild(b); box.appendChild(c);
+  });
+}
+
+async function wbRunPlugin(id) {
+  setRunStatus('正在运行工作台插件…');
+  try {
+    const r = await jsonPost('/api/workbench/plugin/run',
+      Object.assign({ plugin_id: id }, wbWindowParams()));
+    if (!r.ok) { alert(r.message || '插件运行失败'); return; }
+    WB.plugin = id;
+    wbRenderPlugins(WB.data.pl || { plugins: [] });
+    const box = $('wbPluginResult');
+    box.classList.remove('hidden'); box.innerHTML = '';
+    box.appendChild(el('h4', '', r.name + ' · 分析结果'));
+    const table = el('table', 'wb-table');
+    const head = el('thead'); const hrow = el('tr');
+    r.columns.forEach(c => hrow.appendChild(el('th', '', c.label)));
+    head.appendChild(hrow); table.appendChild(head);
+    const body = el('tbody');
+    r.rows.forEach(row => {
+      const tr = el('tr');
+      r.columns.forEach(c => {
+        const val = row[c.key] === undefined || row[c.key] === null ? '' : String(row[c.key]);
+        tr.appendChild(el('td', '', val));
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body); box.appendChild(table);
+    box.appendChild(el('p', '', r.note + ' · 生成于 ' + r.at));
+    setRunStatus('插件「' + r.name + '」已完成。');
+  } catch (e) {
+    alert('插件运行失败：' + e.message);
+  }
+}
+
+function wbRenderSources(sr) {
+  $('wbMode').value = sr.mode || 'managed';
+  $('wbCmdbName').value = sr.cmdb ? sr.cmdb.name : '';
+  $('wbCmdbUrl').value = sr.cmdb ? sr.cmdb.url : '';
+  $('wbMonName').value = sr.monitor ? sr.monitor.name : '';
+  $('wbMonUrl').value = sr.monitor ? sr.monitor.url : '';
+}
+async function wbTestSource(kind) {
+  $('wbSourceMsg').textContent = '正在测试只读连通性（仅 GET）…';
+  try {
+    const r = await jsonPost('/api/workbench/sources/test', { kind });
+    $('wbSourceMsg').textContent = (r.ok ? '✅ ' : '❌ ') + r.message +
+      (r.sample_keys && r.sample_keys.length ? (' · 字段示例：' + r.sample_keys.join(', ')) : '');
+  } catch (e) {
+    $('wbSourceMsg').textContent = '❌ ' + e.message;
+  }
+}
+$('wbTestCmdb').onclick = () => wbTestSource('cmdb');
+$('wbTestMonitor').onclick = () => wbTestSource('monitor');
+$('wbSaveSources').onclick = async () => {
+  const payload = {
+    mode: $('wbMode').value,
+    cmdb: { name: $('wbCmdbName').value.trim(), url: $('wbCmdbUrl').value.trim() },
+    monitor: { name: $('wbMonName').value.trim(), url: $('wbMonUrl').value.trim() },
+  };
+  if ($('wbCmdbToken').value.trim()) payload.cmdb.token = $('wbCmdbToken').value.trim();
+  if ($('wbMonToken').value.trim()) payload.monitor.token = $('wbMonToken').value.trim();
+  try {
+    const r = await jsonPost('/api/workbench/sources', payload);
+    $('wbSourceMsg').textContent = r.ok
+      ? '✅ 已保存（只读配置，不参与执行链路）。改地址后请点对应「测试连通」。'
+      : '❌ 保存失败';
+    $('wbCmdbToken').value = ''; $('wbMonToken').value = '';
+    await wbLoad();
+  } catch (e) {
+    $('wbSourceMsg').textContent = '❌ ' + e.message;
+  }
+};
+
+function wbCellText(row, key) {
+  const v = row[key];
+  return v === undefined || v === null ? '' : String(v);
+}
+function wbRenderDrill(cols, rows) {
+  const h = $('drillHead'); h.innerHTML = '';
+  cols.forEach(c => h.appendChild(el('th', '', c.label)));
+  const tb = $('drillRows'); tb.innerHTML = '';
+  rows.forEach(row => {
+    const tr = el('tr');
+    cols.forEach(c => {
+      const td = el('td', '', wbCellText(row, c.key));
+      if (c.key === 'level') {
+        td.style.fontWeight = '700';
+        td.style.color = row.level === '严重' ? 'var(--danger)'
+          : row.level === '警告' ? 'var(--warn)' : 'var(--muted)';
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  if (!rows.length) {
+    const tr = el('tr'); const td = el('td', '', '该口径下暂无记录（与总览一致）');
+    td.colSpan = cols.length; td.className = 'wb-empty'; tr.appendChild(td); tb.appendChild(tr);
+  }
+}
+function wbRenderPager(total, page, size, go) {
+  const box = $('drillPager'); box.innerHTML = '';
+  box.appendChild(el('span', '', '共 ' + total + ' 条 · 第 ' + page + ' / ' +
+    Math.max(1, Math.ceil(total / size)) + ' 页'));
+  const prev = el('button', 'btn tiny', '上一页');
+  prev.disabled = page <= 1; prev.onclick = () => go(page - 1);
+  const next = el('button', 'btn tiny', '下一页');
+  next.disabled = page * size >= total; next.onclick = () => go(page + 1);
+  box.appendChild(prev); box.appendChild(next);
+}
+async function wbDrillQuality(dim, page) {
+  try {
+    const r = await api('/api/workbench/quality?dimension=' + encodeURIComponent(dim) +
+      '&page=' + page + '&size=12');
+    openModal('modalDrill');
+    $('drillTitle').textContent = '资产质量下钻 · ' + r.label;
+    $('drillMeta').textContent = '共 ' + r.total + ' 项待治理 · 第 ' + r.page + ' 页 · ' + r.note;
+    $('drillHint').textContent = '只读明细 · ' + r.note;
+    WB.drill = { label: r.label, cols: QUALITY_COLS, rows: r.rows };
+    wbRenderDrill(QUALITY_COLS, r.rows);
+    wbRenderPager(r.total, r.page, r.size, p => wbDrillQuality(dim, p));
+  } catch (e) { alert('下钻失败：' + e.message); }
+}
+async function wbDrillAlerts(params, page) {
+  try {
+    const q = 'resource=' + encodeURIComponent(params.resource || '') +
+      '&region=' + encodeURIComponent(params.region || '') + '&page=' + page +
+      '&size=12&' + wbWindowQuery();
+    const r = await api('/api/workbench/alerts?' + q);
+    openModal('modalDrill');
+    const title = '告警下钻（' + (r.window_label || '所选时间窗') + '）' +
+      (params.region ? (' · ' + params.region) : '') +
+      (params.resource ? (' · ' + params.resource) : '');
+    $('drillTitle').textContent = title;
+    $('drillMeta').textContent = '共 ' + r.total + ' 条 · 第 ' + r.page + ' 页 · ' + r.note;
+    $('drillHint').textContent = '只读明细 · ' + r.note;
+    WB.drill = { label: title, cols: ALERT_COLS, rows: r.rows };
+    wbRenderDrill(ALERT_COLS, r.rows);
+    wbRenderPager(r.total, r.page, r.size, p => wbDrillAlerts(params, p));
+  } catch (e) { alert('下钻失败：' + e.message); }
+}
+
+function wbAskAi(text) {
+  if (!S.profiles.length) {
+    alert('请先在右上角「API修改」配置 AI 接入，再让 AI 分析。');
+    return;
+  }
+  setMode('ask');
+  openAiDrawer();
+  $('promptInput').value = text;
+  setTimeout(() => {
+    if (!S.running && !$('btnRun').disabled) $('btnRun').click();
+    else setRunStatus('分析要求已填入输入框，稍后点「开始提问」即可。');
+  }, 420);
+}
+$('wbAskAi').onclick = () => {
+  const d = WB.data;
+  if (!d.ov) { alert('工作台数据尚未加载完成'); return; }
+  const text = '【运维工作台总览】数据源：' + d.ov.mode + '，更新于 ' + d.ov.generated_at + '。\n'
+    + d.ov.metrics.map(m => '- ' + m.label + '：' + m.value + m.unit + '（' + m.hint + '）').join('\n')
+    + '\n地域：' + d.rg.rows.map(r => r.name + ' ' + r.hosts + ' 台 / 监控中 ' + r.monitored +
+        ' 台 / 覆盖率 ' + r.rate + '% / 告警 ' + r.alerts + ' 条').join('；')
+    + '\n资产质量维度：' + d.qu.summary.map(x => x.label + ' ' + x.count + ' 项').join('，')
+    + '\n最新采集指标：' + (d.mt.rows || []).map(m => m.host + ' CPU ' +
+        (m.cpu === null ? '—' : m.cpu + '%') + ' / 内存 ' +
+        (m.mem === null ? '—' : m.mem + '%') + ' / 磁盘 ' +
+        (m.disk === null ? '—' : m.disk + '%')).join('；')
+    + '\n告警资源类型（' + (d.al.window_label || '所选时间窗') + '）：' +
+        d.al.summary.map(x => x.label + ' ' + x.count + ' 条').join('，')
+    + '\n请按「现象 / 证据 / 判断 / 建议 / 下一步核对」给出分析，明确哪些结论需要人工归因，'
+    + '不要编造未提供的字段值。';
+  wbAskAi(text);
+  wbLog('让 AI 分析工作台总览口径');
+};
+$('drillAi').onclick = () => {
+  const d = WB.drill;
+  if (!d || !d.rows.length) { alert('当前没有可分析的数据'); return; }
+  const shown = d.rows.slice(0, 12);
+  const lines = shown.map((r, i) => (i + 1) + '. ' + d.cols.map(c =>
+    c.label + '=' + (wbCellText(r, c.key) || '—')).join('，'));
+  const text = '【运维工作台 · ' + d.label + '】下面是按统一口径归集的只读明细（当前展示 ' +
+    shown.length + ' 条）。请按「现象 / 证据 / 判断 / 建议 / 下一步核对」给出分析。'
+    + '注意：差集只说明两端数据对不上，不判断哪端有误，归因需人工判断。\n' + lines.join('\n');
+  closeModal('modalDrill');
+  wbAskAi(text);
+  wbLog('让 AI 分析工作台下钻数据：' + d.label);
+};
+
 /* ---------------- 登录态 ---------------- */
 $('btnLogout').onclick = async () => {
   if (!confirm('确定退出登录？')) return;
@@ -1792,6 +2302,8 @@ $('btnLogout').onclick = async () => {
   loadPrefs();
   applyTheme(PREF.theme);
   applyKeepalive();
+  initLevelSelect();
+  wbBindWindow();
   try {
     const me = await api('/api/auth/me');
     if (me && me.username) $('userTag').textContent = me.username;
@@ -1807,6 +2319,10 @@ $('btnLogout').onclick = async () => {
       showEmptyTerm();
       setBadge('未连接', false);
     }
+    // 恢复上次离开时的视图；工作台视图不影响任何 SSH 会话与审计
+    let savedView = 'terminal';
+    try { savedView = localStorage.getItem('aoc_view_v1') || 'terminal'; } catch (e) { /* ignore */ }
+    setView(savedView === 'workbench' ? 'workbench' : 'terminal', false);
   } catch (e) {
     showEmptyTerm('后端服务未就绪：' + e.message + '。请先运行 scripts/start.bat 或 scripts/start.sh。');
   }

@@ -1,27 +1,20 @@
-# ===== 本机敏感配置（含真实 API Key / 口令散列 / 主机密码，绝不提交） =====
+# 本机密钥配置（勿提交）
 config/config.json
 config/config.json.tmp
 config/*.bak
 config/*.local.json
-*.env
-*.env.*
 
-# ===== 虚拟环境（由本机 Python 现场创建，体积大且不跨平台） =====
-venv/
-.venv/
-
-# ===== 运行产物：命令审计实录 / 日志（含真实操作与_IP，绝不提交） =====
-audit/
-logs/
-*.log
-
-# ===== 其他运行缓存 =====
+# 运行产物
+# 工作台采集快照（含主机真实指标，不入库）
+data/
 __pycache__/
 *.pyc
+.venv/
+venv/
+audit/
+*.log
 temp/
 runtime/
 .DS_Store
-Thumbs.db
-
-# 根目录落盘的原始大图不入库（正式配图在 assets/）
+# 根目录大图仅本地保留，不入库
 /*.jpg

@@ -4,6 +4,8 @@
 用法（项目根目录）：python scripts/test_all.py
 运行顺序：L1 test_render.mjs → L2 selftest.py → L3/L4 httpcheck.py
           → L5 test_static.py → L6 test_ui.mjs → L7 终端转录 → L8 会话审计
+          → L9 运维工作台口径 / 插件 / 只读边界
+          → L10 交互式服务控制台（命令解析 / 服务状态机）
 所有数字均来自子进程真实 stdout，不写死任何占位数字。
 
 注意：selftest.py 由后端工程师并行修复，本脚本不修改它；若首次运行失败，
@@ -17,14 +19,10 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 可移植：优先项目 venv，其次当前解释器，最后 PATH 上的 python（不硬编码任何个人路径）。
+# 优先使用项目自带 venv（start.bat 已按 requirements.txt 装齐依赖），
+# 避免硬编码 WorkBuddy 托管 Python 路径导致测试在本机环境变化后整层失败。
 _VENV_PY = os.path.join(ROOT, "venv", "Scripts", "python.exe")
-if os.path.exists(_VENV_PY):
-    PY = _VENV_PY
-elif sys.executable and os.path.basename(sys.executable).lower().startswith("python"):
-    PY = sys.executable
-else:
-    PY = "python"
+PY = _VENV_PY if os.path.isfile(_VENV_PY) else sys.executable
 NODE = "node"
 REPORT = os.path.join(ROOT, "docs", "TEST_REPORT.md")
 
@@ -39,6 +37,10 @@ LAYERS = [
      "python scripts/test_terminal_capture.py"),
     ("L8", "会话窗口审计单测", "scripts/test_audit_sessions.py",
      "python scripts/test_audit_sessions.py"),
+    ("L9", "运维工作台纳管主机口径单测", "scripts/test_workbench.py",
+     "python scripts/test_workbench.py"),
+    ("L10", "交互式服务控制台单测", "scripts/test_console.py",
+     "python scripts/test_console.py"),
 ]
 
 # 6 个截图问题 → 各层用例名关键字（用于从真实输出中定位证据行）
@@ -209,6 +211,14 @@ def main():
     results["L8"] = r8
     print("[L8] test_audit_sessions.py   %d 通过 / %d 失败  (%.2fs, exit=%d)" %
           (r8["pass"], r8["fail"], r8["secs"], r8["code"]))
+    r9 = do_run("L9", [PY, "scripts/test_workbench.py"])
+    results["L9"] = r9
+    print("[L9] test_workbench.py        %d 通过 / %d 失败  (%.2fs, exit=%d)" %
+          (r9["pass"], r9["fail"], r9["secs"], r9["code"]))
+    r10 = do_run("L10", [PY, "scripts/test_console.py"])
+    results["L10"] = r10
+    print("[L10] test_console.py         %d 通过 / %d 失败  (%.2fs, exit=%d)" %
+          (r10["pass"], r10["fail"], r10["secs"], r10["code"]))
 
     # selftest 并行修复中：失败则在最后重跑一次并如实记录
     rerun = None

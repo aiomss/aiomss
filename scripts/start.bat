@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
-title AI Ops Console - close this window to stop the service
+title AI Ops Console - Service Console
 
 echo ============================================================
 echo   AI Ops Console - startup
@@ -16,6 +16,7 @@ echo %DATE% %TIME% start >> "%LOG%" 2>nul
 
 rem Make sure we are actually inside the project. Shortcut may be stale or folder moved.
 if not exist "%ROOT%\backend\app.py" goto :BAD_LOCATION
+if not exist "%ROOT%\scripts\console.py" goto :NO_CONSOLE
 
 rem If venv exists, verify it can actually start. Its base Python may have been removed.
 if exist "%PY%" (
@@ -63,25 +64,33 @@ if not errorlevel 1 goto :PORT_BUSY
 echo        Port is free.
 echo.
 
-rem Start service.
-echo [3/3] Starting service...
+rem Start interactive service console.
+echo [3/3] Starting interactive service console...
 echo ------------------------------------------------------------
 echo   URL        : http://127.0.0.1:8848
 echo   Login page : http://127.0.0.1:8848/login
 echo.
-echo   Close this window to stop the service, or press Ctrl+C.
-echo   The service exits automatically with this window.
+echo   Commands in this window:
+echo     r  reload   - restart service, keep this window
+echo     x  stop     - stop service, keep this window
+echo     b  start    - start service again
+echo     o  open     - open login page in browser
+echo     st status   - show current status
+echo     h  help     - show all commands
+echo     q  quit     - stop service and exit console
+echo.
+echo   Closing this window also stops the service.
 echo ------------------------------------------------------------
 echo.
 
 start "" /min cmd /c "ping -n 4 127.0.0.1 >nul & start http://127.0.0.1:8848"
 
-"%PY%" -m backend.app
+"%PY%" scripts\console.py
 set "EXITCODE=%ERRORLEVEL%"
 echo.
 echo ============================================================
-echo   Service stopped. Exit code: %EXITCODE%
-echo   If the code is not 0, read the error message above.
+echo   Service console exited. Exit code: %EXITCODE%
+echo   The service was stopped by the console on exit.
 echo ============================================================
 echo %DATE% %TIME% stopped exit=%EXITCODE% >> "%LOG%" 2>nul
 echo.
@@ -99,6 +108,17 @@ echo   Fix: re-create the desktop shortcut so it points to
 echo     scripts\start.bat  inside the ai-ops-console folder.
 echo.
 echo %DATE% %TIME% BAD_LOCATION >> "%LOG%" 2>nul
+timeout /t 10 >nul
+exit /b 1
+
+:NO_CONSOLE
+echo.
+echo [ERROR] Interactive console entry was not found at:
+echo   %ROOT%\scripts\console.py
+echo   The project copy is incomplete or outdated.
+echo   Fix: restore scripts\console.py from the source, then retry.
+echo.
+echo %DATE% %TIME% NO_CONSOLE >> "%LOG%" 2>nul
 timeout /t 10 >nul
 exit /b 1
 
@@ -132,7 +152,7 @@ exit /b 1
 echo.
 echo [INFO] Port 127.0.0.1:8848 is already in use.
 echo        The service is probably already running.
-echo        To stop it, close its console window.
+echo        To stop it, go to its console window and type: x
 echo        Opening the browser instead of starting a second instance.
 start "" http://127.0.0.1:8848
 echo %DATE% %TIME% PORT_BUSY >> "%LOG%" 2>nul

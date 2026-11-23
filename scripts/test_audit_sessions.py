@@ -41,7 +41,7 @@ def feed(sid, text, raw=None):
     return audit.feed_output(sid, b, text)
 
 
-ctx = {"user": "admin", "ip": "127.0.0.1", "host": "示例云主机",
+ctx = {"user": "admin", "ip": "127.0.0.1", "host": "阿里云主机",
        "target": "root@203.0.113.20:2222", "sid": "s1"}
 ctx_win = dict(ctx, cols=80, rows=8)
 
@@ -80,7 +80,7 @@ audit.close_session("s1", "正常断开")
 t1 = open(p1, "r", encoding="utf-8").read()
 check("文件头含用户/IP/主机/连接时间",
       all(x in t1 for x in ("# user         : admin", "# ip           : 127.0.0.1",
-                            "# host         : 示例云主机", "# connected_at")))
+                            "# host         : 阿里云主机", "# connected_at")))
 check("正文含终端命令 lsblk / df -h", "cmd=lsblk" in t1 and "cmd=df -h" in t1)
 check("正文含未关联 sid 的下载与 AI 诊断事件",
       "/etc/hosts" in t1 and "type=DIAGNOSE" in t1)

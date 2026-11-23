@@ -50,10 +50,15 @@ check("start.bat 以 CRLF 结尾", bat[-2:] == b"\r\n", bat[-4:])
 check("start.bat 含 CRLF 行", crlf > 0, "crlf=%d" % crlf)
 check("start.bat 含 @echo off", "@echo off" in bat_text)
 check("start.bat 含 cd /d 回项目根", 'cd /d "%~dp0.."' in bat_text)
-check("start.bat 含 -m backend.app 启动命令", "-m backend.app" in bat_text)
-check("start.bat 通过 \"%PY%\" 变量调用托管 Python",
-      '"%PY%" -m backend.app' in bat_text)
-check("start.bat 含 pause（失败不闪退）", "pause" in bat_text)
+check("start.bat 调用交互式控制台 console.py",
+      "scripts\\console.py" in bat_text and '"%PY%" scripts\\console.py' in bat_text)
+check("start.bat 通过 \"%PY%\" 变量调用项目 venv Python",
+      '"%PY%" scripts\\console.py' in bat_text)
+check("start.bat 菜单提示含 reload/stop/start/quit 命令",
+      all(cmd in bat_text for cmd in ("r  reload", "x  stop", "b  start", "q  quit")))
+# 加固版用 timeout /t 10 代替 pause：同样保证失败不闪退，且无需用户按键
+check("start.bat 含 pause 或 timeout（失败不闪退）",
+      "pause" in bat_text or "timeout /t" in bat_text)
 check("start.bat 逐行双引号成对",
       all(line.count('"') % 2 == 0 for line in bat_text.split("\r\n")))
 
@@ -74,8 +79,10 @@ except UnicodeDecodeError as e:
 check("start.sh 是合法 UTF-8", utf8_ok)
 check("start.sh 含 python3 存在性检查", 'command -v "$PY"' in sh_text)
 check("start.sh 含 PYTHON_BIN 可覆盖", "PYTHON_BIN" in sh_text)
-check("start.sh 含 exec \"$PY\" -m backend.app",
-      'exec "$PY" -m backend.app' in sh_text)
+check("start.sh 含 exec \"$PY\" scripts/console.py",
+      'exec "$PY" scripts/console.py' in sh_text)
+check("start.sh 菜单提示含 reload/stop 命令",
+      "r=reload" in sh_text and "x=stop" in sh_text)
 
 # ---------------- 3. config/config.json 结构 ----------------
 print("=== 3. config/config.json 结构（不输出任何配置值） ===")
@@ -115,7 +122,8 @@ for rel in ("requirements.txt", "frontend/index.html",
             "frontend/assets/render.js", "frontend/assets/app.js",
             "frontend/assets/style.css", "scripts/test_render.mjs",
             "scripts/selftest.py", "scripts/httpcheck.py",
-            "scripts/start.bat", "scripts/start.sh"):
+            "scripts/start.bat", "scripts/start.sh",
+            "scripts/console.py", "scripts/test_console.py"):
     check("文件存在: %s" % rel, os.path.isfile(os.path.join(ROOT, rel)))
 
 # ---------------- 5. 六个截图问题的源码静态契约 ----------------
@@ -191,6 +199,46 @@ check("问题6: style.css 含 .sm-pre / .sm-trunc",
       ".sm-pre" in stylecss and ".sm-trunc" in stylecss)
 check("问题6: index.html 引入 render.js",
       "/static/assets/render.js" in index)
+
+# ---------------- 本次修复：主机编辑校验 / 应用等级四级 / 刷新反馈 / 时间窗 ----------------
+print("=== 主机编辑与时间窗修复 ===")
+# 问题1：修改主机密码留空表示不修改，不能强制必填
+check("修改主机：新增才要求密码，编辑时密码可留空",
+      "if (!EDITING_HOST_ID && !p.password)" in appjs
+      and "地址、用户名、密码必填" not in appjs)
+check("密码框保留「留空表示不修改原密码」提示",
+      "留空表示不修改原密码" in appjs or "留空表示不修改原密码" in index)
+# 问题2：应用等级四级下拉
+check("应用等级四级下拉（一般/重要/关键/核心）",
+      all(x in appjs for x in ("APP_LEVELS", "'一般'", "'重要'", "'关键'", "'核心'"))
+      and 'id="hLevel"' in index and "<select id=\"hLevel\"" in index)
+# 问题3：刷新按钮有 loading 与可见反馈
+check("刷新按钮有刷新中状态与已刷新反馈",
+      "⟳ 刷新中…" in appjs and "已刷新" in appjs)
+# 问题4：保存主机后在工作台视图自动重绘
+check("主机保存后工作台自动重绘",
+      "await wbLoad();" in appjs and "workbenchView" in appjs)
+# 问题5：时间窗五档 + 实时指标
+check("时间窗五档选择器存在于页面",
+      all(('value="%s"' % v) in index for v in ("5m", "15m", "30m", "1h", "custom"))
+      and 'id="wbWindow"' in index)
+check("后端提供实时采集指标与时间窗接口",
+      "def live_metrics" in open(os.path.join(ROOT, "backend", "workbench.py"),
+                                 encoding="utf-8").read()
+      and "/api/workbench/metrics" in open(os.path.join(ROOT, "backend", "app.py"),
+                                          encoding="utf-8").read())
+# 本次：资产台账展示已填参数，质量清单文案不再误导
+check("后端提供资产台账接口",
+      "def assets" in open(os.path.join(ROOT, "backend", "workbench.py"),
+                           encoding="utf-8").read()
+      and "/api/workbench/assets" in open(os.path.join(ROOT, "backend", "app.py"),
+                                          encoding="utf-8").read())
+check("前端有资产台账表格与渲染",
+      'id="wbAssetRows"' in index and "function wbRenderAssets" in appjs
+      and "/api/workbench/assets" in appjs)
+check("质量清单 0 项时提示字段已填齐",
+      "字段已填齐" in appjs and "0 表示已填齐" in open(
+          os.path.join(ROOT, "backend", "workbench.py"), encoding="utf-8").read())
 
 print()
 print("结果: %d 通过 / %d 失败" % (PASS, FAIL))

@@ -9,7 +9,8 @@ if ! command -v "$PY" >/dev/null 2>&1; then
     exit 1
 fi
 echo "============================================================"
-echo "  AI 运维控制台 启动中..."
-echo "  浏览器打开: http://127.0.0.1:8848"
+echo "  AI Ops Console - Service Console"
+echo "  URL: http://127.0.0.1:8848/login"
+echo "  Commands: r=reload  x=stop  b=start  o=open  st=status  q=quit"
 echo "============================================================"
-exec "$PY" -m backend.app
+exec "$PY" scripts/console.py

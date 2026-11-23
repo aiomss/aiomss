@@ -19,7 +19,11 @@
       </svg>
     </span>
     <span class="brand-name">AI 运维控制台</span>
-    <small>SSH 多主机 · AI 诊断</small>
+    <small>SSH 多主机 · AI 诊断 · 工作台</small>
+  </div>
+  <div class="view-switch" role="tablist" aria-label="主视图切换">
+    <button id="btnViewTerminal" class="view-btn active" role="tab" aria-selected="true">🖥 SSH 终端</button>
+    <button id="btnViewWorkbench" class="view-btn" role="tab" aria-selected="false">📊 运维工作台</button>
   </div>
   <div class="top-right">
     <span id="connBadge" class="badge off">未连接</span>
@@ -46,6 +50,126 @@
 
   <!-- ============ 主区：SSH 终端独占 ============ -->
   <main class="main">
+
+    <!-- ============ 运维工作台：轻量数据观察与下钻（只读） ============ -->
+    <section id="workbenchView" class="workbench-view hidden">
+      <div class="wb-head">
+        <div>
+          <h2>运维工作台 <small>把分散数据按同一口径归集 · 只看不下发</small></h2>
+          <div id="wbSourceTag" class="wb-source-tag">数据源：读取中…</div>
+        </div>
+        <div class="wb-head-actions">
+          <button id="wbCollect" class="btn" title="对已纳管主机执行只读命令，采集 CPU / 内存 / 磁盘 / 网络指标">⌁ 采集监控数据</button>
+          <button id="wbRefresh" class="btn" title="重新读取总览数据">⟳ 刷新</button>
+          <button id="wbAskAi" class="btn primary" title="把当前口径交给右侧 AI 助手分析">✦ 让 AI 分析</button>
+        </div>
+        <div id="wbCollectMsg" class="wb-note"></div>
+      </div>
+
+      <div id="wbKpis" class="wb-kpis"></div>
+
+      <div class="wb-grid">
+        <div class="wb-col">
+          <div class="wb-card">
+            <div class="wb-card-head"><b>地域维度</b><span>资产全量 · 监控按所选时间窗 · 点行看下钻</span></div>
+            <table class="wb-table"><thead><tr>
+              <th>地域</th><th>主机数</th><th>监控中</th><th>覆盖率</th><th id="wbRegionAlertTh">告警数</th>
+            </tr></thead><tbody id="wbRegionRows"></tbody></table>
+            <div id="wbRegionNote" class="wb-note"></div>
+          </div>
+
+          <div class="wb-card">
+            <div class="wb-card-head"><b>监控日清</b>
+              <span class="wb-window-pick">
+                <select id="wbWindow" title="选择监控告警的统计时间窗">
+                  <option value="5m">最近 5 分钟</option>
+                  <option value="15m">最近 15 分钟</option>
+                  <option value="30m">最近 30 分钟</option>
+                  <option value="1h" selected>最近 1 小时</option>
+                  <option value="custom">自定义</option>
+                </select>
+                <span id="wbCustomRange" class="hidden">
+                  <input id="wbStart" type="datetime-local" title="起始时间">
+                  <span>至</span>
+                  <input id="wbEnd" type="datetime-local" title="结束时间">
+                </span>
+              </span>
+            </div>
+            <div class="wb-sub-head">最新采集指标 <small id="wbMetricsAt"></small></div>
+            <table class="wb-table compact"><thead><tr>
+              <th>纳管主机</th><th>地域</th><th>CPU</th><th>内存</th><th>磁盘</th><th>网络错误</th><th>采集时间</th>
+            </tr></thead><tbody id="wbMetricRows"></tbody></table>
+            <div id="wbMetricsNote" class="wb-note"></div>
+            <div class="wb-sub-head">告警分布 <small id="wbWindowLabel"></small></div>
+            <div id="wbResourceBars" class="wb-bars"></div>
+            <table class="wb-table compact"><thead><tr>
+              <th>时间</th><th>级别</th><th>资源</th><th>主机 / 对象</th><th>内容</th>
+            </tr></thead><tbody id="wbAlertRows"></tbody></table>
+            <div class="wb-card-foot">
+              <span id="wbAlertNote" class="wb-note"></span>
+              <button id="wbAlertMore" class="btn ghost tiny">查看全部告警 →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="wb-col">
+          <div class="wb-card">
+            <div class="wb-card-head"><b>纳管主机资产台账</b><span id="wbAssetsTotal">读取中…</span></div>
+            <div class="wb-table-wrap">
+              <table class="wb-table compact wb-asset-table"><thead><tr>
+                <th>主机</th><th>地域</th><th>机房</th><th>业务线</th><th>应用等级</th><th>组织</th><th>维保</th><th>监控</th>
+              </tr></thead><tbody id="wbAssetRows"></tbody></table>
+            </div>
+            <div id="wbAssetNote" class="wb-note"></div>
+          </div>
+
+          <div class="wb-card">
+            <div class="wb-card-head"><b>资产数据质量清单</b><span id="wbQualityTotal">读取中…</span></div>
+            <div id="wbQualityList" class="wb-quality-list"></div>
+            <div id="wbQualityNote" class="wb-note"></div>
+          </div>
+
+          <div class="wb-card">
+            <div class="wb-card-head"><b>可插拔分析插件</b><span>即需即供 · 只读分析</span></div>
+            <div id="wbPlugins" class="wb-plugins"></div>
+            <div id="wbPluginResult" class="wb-plugin-result hidden"></div>
+          </div>
+
+          <details class="wb-card wb-sources">
+            <summary>只读数据源配置（预留查询接口，不进执行链路）</summary>
+            <div class="wb-source-body">
+              <p class="wb-note">工作台只认系统已纳管的主机：主机清单取本地配置，监控指标由「采集监控数据」从这些主机只读获取。没有采集就显示 0，不填演示数字。下面的只读查询接口仅预留给外部系统对账，不参与执行链路。</p>
+              <div class="wb-source-grid">
+                <label>模式 <select id="wbMode">
+                  <option value="managed">已纳管主机 + 本地采集（推荐）</option>
+                  <option value="http">只读查询接口（预留）</option>
+                </select></label>
+              </div>
+              <div class="wb-source-item">
+                <b>CMDB 查询接口（主机 / 机房 / 业务线 / 应用等级 / 组织 / 维保）</b>
+                <div class="wb-source-row">
+                  <input id="wbCmdbName" placeholder="名称，如 生产 CMDB（只读账号）">
+                  <input id="wbCmdbUrl" placeholder="https://cmdb.example.com/api/hosts（仅 GET）">
+                  <input id="wbCmdbToken" type="password" placeholder="只读 Token（留空不修改）">
+                  <button id="wbTestCmdb" class="btn tiny">测试连通</button>
+                </div>
+              </div>
+              <div class="wb-source-item">
+                <b>监控查询接口（Prometheus / Zabbix 等只读 API）</b>
+                <div class="wb-source-row">
+                  <input id="wbMonName" placeholder="名称，如 监控平台（只读账号）">
+                  <input id="wbMonUrl" placeholder="https://monitor.example.com/api/alerts（仅 GET）">
+                  <input id="wbMonToken" type="password" placeholder="只读 Token（留空不修改）">
+                  <button id="wbTestMonitor" class="btn tiny">测试连通</button>
+                </div>
+              </div>
+              <div id="wbSourceMsg" class="wb-note"></div>
+              <button id="wbSaveSources" class="btn primary tiny">保存数据源配置</button>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
 
     <!-- 真·交互式 SSH 终端 -->
     <section class="panel term-panel" id="termPanel">
@@ -180,6 +304,12 @@
         <label>端口 <input id="hPort" type="number" value="22"></label>
         <label>用户名 <input id="hUser" value="root"></label>
         <label class="full">密码 <input id="hPass" type="password" placeholder="SSH 登录密码"></label>
+        <label>地域 <input id="hRegion" placeholder="如 华东一"></label>
+        <label>机房 <input id="hRoom" placeholder="如 A 栋 3 楼"></label>
+        <label>业务线 <input id="hBiz" placeholder="如 电商交易"></label>
+        <label>应用等级 <select id="hLevel"><option value="">未分级</option></select></label>
+        <label>责任组织 <input id="hOrg" placeholder="如 基础架构部"></label>
+        <label>维保到期 <input id="hMaintenance" type="date"></label>
         <label class="full">备注 <input id="hNote" placeholder="可选"></label>
       </div>
       <div id="hTestMsg" class="test-msg"></div>
@@ -335,6 +465,25 @@
       <span class="spacer"></span>
       <button class="btn ghost" data-close="modalSettings">取消</button>
       <button id="btnSaveSettings" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 弹窗：工作台下钻明细（资产质量 / 24 小时告警） ============ -->
+<div id="modalDrill" class="modal hidden">
+  <div class="modal-card drill-card">
+    <div class="modal-head"><b id="drillTitle">下钻明细</b><button class="x" data-close="modalDrill">×</button></div>
+    <div class="modal-body drill-body">
+      <div id="drillMeta" class="drill-meta"></div>
+      <div class="drill-table-wrap"><table class="wb-table"><thead><tr id="drillHead"></tr></thead>
+        <tbody id="drillRows"></tbody></table></div>
+      <div id="drillPager" class="drill-pager"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="drillHint" class="file-hint">只读明细 · 差集只说明两端对不上，归因需人工判断</span>
+      <span class="spacer"></span>
+      <button id="drillAi" class="btn primary">✦ 让 AI 分析这批数据</button>
+      <button class="btn ghost" data-close="modalDrill">关闭</button>
     </div>
   </div>
 </div>

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-// Portable: prefer the project venv, else the python on PATH. No hardcoded personal path.
+// Portable: prefer project venv, else python on PATH.
 const VENV_PY = path.join(ROOT, 'venv', 'Scripts', 'python.exe');
 const PY = fs.existsSync(VENV_PY) ? VENV_PY : 'python';
 const HOST = 'http://127.0.0.1:8899';
@@ -164,6 +164,11 @@ async function main() {
       fs.writeFileSync(file, Buffer.from(r.data, 'base64'));
       return fs.statSync(file).size;
     };
+    // 截图只用于文档展示：把本机主机清单里的真实 IP 改成示例值，
+    // 避免以后把 assets/*.png 同步到公开仓库时泄露生产地址。
+    const maskHostAddresses = async () => {
+      await evalValue(`document.querySelectorAll('#hostList .host-meta .s').forEach(function(x){ x.textContent = 'root@example.com:22'; });`);
+    };
 
     await send('Network.enable');
     await send('Page.enable');
@@ -198,10 +203,12 @@ async function main() {
         state: document.readyState,
         render: typeof window.AiOpsRender,
         hosts: document.querySelectorAll('#hostList .host-connect').length,
-        badge: (document.getElementById('connBadge') || {}).textContent
+        badge: (document.getElementById('connBadge') || {}).textContent,
+        emptyReady: !!document.querySelector('#termHost .term-empty')
       }))()`);
       return domReady && domReady.state === 'complete'
-        && domReady.render === 'object' && domReady.hosts > 0;
+        && domReady.render === 'object' && domReady.hosts > 0
+        && domReady.emptyReady === true;
     }, 25000, '首页 DOM ready + 主机列表渲染');
     check('首页加载完成且 window.AiOpsRender 已挂载', domReady.render === 'object', domReady);
 
@@ -434,6 +441,121 @@ async function main() {
     check('输入控制区固定在结果区下方（贴近页面底部）', lay.controlsBelowResults === true, JSON.stringify(lay));
     check('结果输出区自带滚动条（overflow:auto）', lay.resultsScroll === 'auto', JSON.stringify(lay));
 
+    // ---- 6.12 运维工作台：总览 / 下钻 / 插件 / 切回终端 ----
+    await evalValue(`document.getElementById('btnViewWorkbench').click()`);
+    await waitUntil(async () =>
+      (await evalValue(`document.querySelectorAll('#wbKpis .wb-kpi').length`)) === 4,
+      15000, '运维工作台四项总览渲染');
+    const wb = await evalValue(`(() => {
+      const kpis = Array.from(document.querySelectorAll('#wbKpis .wb-kpi')).map(x => ({
+        label: x.querySelector('.wb-kpi-label').textContent.trim(),
+        value: x.querySelector('.wb-kpi-value').textContent.trim()
+      }));
+      return {
+        kpis: kpis,
+        regionRows: document.querySelectorAll('#wbRegionRows tr').length,
+        quality: document.querySelectorAll('#wbQualityList .wb-quality-item').length,
+        plugins: document.querySelectorAll('#wbPlugins .wb-plugin').length,
+        bars: document.querySelectorAll('#wbResourceBars .wb-bar-track').length,
+        sourceTag: (document.getElementById('wbSourceTag').textContent || '').trim(),
+        collectBtn: !!document.getElementById('wbCollect'),
+        winOpts: Array.from(document.querySelectorAll('#wbWindow option')).map(o => o.value),
+        metricRows: document.querySelectorAll('#wbMetricRows tr').length,
+        assetRows: document.querySelectorAll('#wbAssetRows tr').length,
+        assetTotal: (document.getElementById('wbAssetsTotal').textContent || '').trim(),
+        qualityTotal: (document.getElementById('wbQualityTotal').textContent || '').trim(),
+        windowLabel: (document.getElementById('wbWindowLabel').textContent || '').trim(),
+        refreshBtn: !!document.getElementById('wbRefresh'),
+        levelOpts: Array.from(document.querySelectorAll('#hLevel option')).map(o => o.value),
+        termHidden: document.getElementById('termPanel').classList.contains('hidden'),
+        wbVisible: !document.getElementById('workbenchView').classList.contains('hidden')
+      };
+    })()`);
+    check('工作台四项指标均为真实数值（不再写死文章示例）',
+      wb.kpis.length === 4 && wb.kpis.every(k => /^[0-9]/.test(k.value))
+      && wb.kpis[1].value.includes('%'), JSON.stringify(wb.kpis));
+    check('数据源标签显示已纳管主机数', wb.sourceTag.includes('已纳管'), wb.sourceTag);
+    check('界面提供采集监控数据入口', wb.collectBtn === true, wb.collectBtn);
+    check('地域维度按纳管主机归集（至少合计行）', wb.regionRows >= 2, wb.regionRows);
+    check('资产质量六个维度、可插拔插件三项、资源类型四条',
+      wb.quality === 6 && wb.plugins === 3 && wb.bars === 4, JSON.stringify(wb));
+    check('纳管主机资产台账展示已填参数（行含纳管主机）',
+      wb.assetRows >= 1 && /[1-9]\d*\s*台已纳管/.test(wb.assetTotal),
+      JSON.stringify({rows: wb.assetRows, total: wb.assetTotal}));
+    check('质量清单 0 项时说明字段已填齐（不再误导为没读到）',
+      /字段已填齐|待治理/.test(wb.qualityTotal), wb.qualityTotal);
+    check('切到工作台时终端隐藏且工作台可见',
+      wb.termHidden === true && wb.wbVisible === true, JSON.stringify(wb));
+    check('监控时间窗提供 5/15/30 分钟、1 小时、自定义五档',
+      JSON.stringify(wb.winOpts) === JSON.stringify(['5m', '15m', '30m', '1h', 'custom']),
+      JSON.stringify(wb.winOpts));
+    check('实时采集指标表已渲染（空态也给提示行）', wb.metricRows >= 1, wb.metricRows);
+    check('告警分布显示所选时间窗标签', wb.windowLabel.length > 0, wb.windowLabel);
+    check('应用等级为一般/重要/关键/核心四级下拉',
+      ['一般', '重要', '关键', '核心'].every(x => wb.levelOpts.includes(x)),
+      JSON.stringify(wb.levelOpts));
+
+    // 切换时间窗后标签随之变化（验证问题5的交互确实生效）
+    await evalValue(`(() => { const s = document.getElementById('wbWindow');
+      s.value = '5m'; s.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+    await waitUntil(async () =>
+      (await evalValue(`(document.getElementById('wbWindowLabel').textContent || '').includes('5 分钟')`)),
+      12000, '切换 5 分钟时间窗');
+    check('切换时间窗后告警标签更新为最近 5 分钟', true);
+    await evalValue(`(() => { const s = document.getElementById('wbWindow');
+      s.value = '1h'; s.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+    await waitUntil(async () =>
+      (await evalValue(`(document.getElementById('wbWindowLabel').textContent || '').includes('1 小时')`)),
+      12000, '切回 1 小时时间窗');
+
+    // 刷新按钮：点击后进入 loading 并给出可见反馈（验证问题3）
+    await evalValue(`document.getElementById('wbRefresh').click()`);
+    const refreshFeedback = await evalValue(`(() => {
+      const m = document.getElementById('wbCollectMsg').textContent || '';
+      const b = document.getElementById('wbRefresh');
+      return { msg: m.trim(), btn: b.textContent.trim(), disabled: b.disabled };
+    })()`);
+    check('刷新按钮给出可见反馈文案',
+      (refreshFeedback.msg.includes('正在重新读取') || refreshFeedback.msg.includes('已刷新'))
+      && (refreshFeedback.btn.includes('刷新中') || refreshFeedback.disabled),
+      JSON.stringify(refreshFeedback));
+    await waitUntil(async () =>
+      (await evalValue(`(document.getElementById('wbCollectMsg').textContent || '').includes('已刷新')`)),
+      12000, '刷新完成反馈');
+    check('刷新完成后按钮恢复可用',
+      (await evalValue(`!document.getElementById('wbRefresh').disabled`)) === true);
+
+    await evalValue(`document.querySelector('#wbQualityList .wb-quality-item').click()`);
+    await waitUntil(async () => await evalValue(`(() => {
+      const m = document.getElementById('modalDrill');
+      return !m.classList.contains('hidden') && document.querySelectorAll('#drillRows tr').length > 0;
+    })()`), 12000, '资产质量下钻明细渲染');
+    const drill = await evalValue(`(() => ({
+      rows: document.querySelectorAll('#drillRows tr').length,
+      cols: document.querySelectorAll('#drillHead th').length,
+      pager: (document.getElementById('drillPager').textContent || '').trim()
+    }))()`);
+    check('资产质量点击后下钻到具体主机（明细表 + 分页）',
+      drill.rows > 0 && drill.cols >= 8 && drill.pager.includes('共'), JSON.stringify(drill));
+    await evalValue(`document.querySelector('[data-close="modalDrill"]').click()`);
+
+    await evalValue(`document.querySelector('#wbPlugins .wb-plugin button').click()`);
+    await waitUntil(async () => await evalValue(`(() => {
+      const b = document.getElementById('wbPluginResult');
+      return !b.classList.contains('hidden') && b.querySelectorAll('tbody tr').length > 0;
+    })()`), 12000, '插件分析结果渲染');
+    check('插件运行结果以表格呈现', true);
+
+    await maskHostAddresses();
+    const wbPng = path.join(ASSETS, 'workbench-preview.png');
+    const wbSize = await capture(wbPng);
+    check('保存 assets/workbench-preview.png（工作台界面）', wbSize > 1000, wbSize + ' bytes');
+
+    await evalValue(`document.getElementById('btnViewTerminal').click()`);
+    await waitUntil(async () => await evalValue(`
+      !document.getElementById('termPanel').classList.contains('hidden')`), 8000, '切回 SSH 终端');
+    check('切回 SSH 终端后终端重新显示（会话与审计不受影响）', true);
+
     // ---- 7. 硬证据：初始化期间没有任何 /api/terminal/open 请求 ----
     const termOpens = events
       .filter(m => m.method === 'Network.requestWillBeSent')
@@ -515,6 +637,7 @@ async function main() {
       stage.txt.slice(0, 160));
 
     // ---- 9. 首页截图 ----
+    await maskHostAddresses();
     const mainPng = path.join(ASSETS, 'preview.png');
     const mainSize = await capture(mainPng);
     check('保存 assets/preview.png', mainSize > 1000, mainSize + ' bytes');

@@ -7,3 +7,4 @@ paramiko
 requests
 cryptography
 pillow
+httpx2

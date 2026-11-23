@@ -14,7 +14,7 @@ from fastapi.responses import (StreamingResponse, JSONResponse, FileResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, audit, auth, store
+from . import agent, audit, auth, store, workbench
 from .ai_client import AIClient
 from .ssh_manager import manager
 
@@ -183,6 +183,102 @@ async def auth_logout(req: Request):
 @app.get("/api/state")
 def state():
     return {"ok": True, **store.public_state(), "ssh": manager.status()}
+
+
+# ---------------- 运维工作台（轻量数据观察 · 只读） ----------------
+@app.get("/api/workbench/overview")
+def wb_overview(window: str = "1h", start: str = "", end: str = ""):
+    return workbench.overview(window, start, end)
+
+
+@app.get("/api/workbench/regions")
+def wb_regions(window: str = "1h", start: str = "", end: str = ""):
+    return workbench.regions(window, start, end)
+
+
+@app.get("/api/workbench/quality")
+def wb_quality(dimension: str = "", page: int = 1, size: int = 12):
+    return workbench.quality(dimension, page, size)
+
+
+@app.get("/api/workbench/alerts")
+def wb_alerts(resource: str = "", region: str = "", page: int = 1, size: int = 12,
+              window: str = "1h", start: str = "", end: str = ""):
+    return workbench.alerts(resource, region, page, size, window, start, end)
+
+
+@app.get("/api/workbench/metrics")
+def wb_metrics():
+    """最新采集的真实指标；无告警时也能看到数据，不是一片空白。"""
+    return workbench.live_metrics()
+
+
+@app.get("/api/workbench/assets")
+def wb_assets():
+    """纳管主机资产台账：列出用户已填写的资产参数原值。"""
+    return workbench.assets()
+
+
+@app.get("/api/workbench/windows")
+def wb_windows():
+    return {"ok": True, "windows": list(workbench.WINDOWS),
+            "default": workbench.WINDOW_DEFAULT}
+
+
+@app.get("/api/workbench/plugins")
+def wb_plugins():
+    return workbench.plugins()
+
+
+@app.post("/api/workbench/plugin/run")
+async def wb_plugin_run(req: Request):
+    body = await req.json()
+    pid = body.get("plugin_id", "")
+    result = workbench.run_plugin(pid, body.get("window", "1h"),
+                                  body.get("start", ""), body.get("end", ""))
+    if result.get("ok"):
+        audit_log(req, "运行工作台插件「%s」" % result["name"], "WORKBENCH",
+                  "-", "-", "web")
+    return result
+
+
+@app.get("/api/workbench/sources")
+def wb_sources():
+    return workbench.sources()
+
+
+@app.post("/api/workbench/sources")
+async def wb_sources_save(req: Request):
+    body = await req.json()
+    result = workbench.save_sources(body)
+    audit_log(req, "保存运维工作台只读数据源配置（mode=%s）" % result.get("mode", ""),
+              "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.post("/api/workbench/sources/test")
+async def wb_sources_test(req: Request):
+    body = await req.json()
+    return workbench.test_source(body.get("kind", ""))
+
+
+@app.post("/api/workbench/collect")
+def wb_collect(req: Request):
+    """对已纳管主机执行只读采集，更新工作台监控快照（不下发任何写操作）。"""
+    result = workbench.collect()
+    audit_log(req, "采集纳管主机监控数据（成功 %d / 失败 %d）" %
+              (result.get("success", 0), result.get("failed", 0)),
+              "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.post("/api/workbench/audit")
+async def wb_audit(req: Request):
+    """前端进入工作台 / 下钻时的轻量审计；所有终端输出仍由 reader 钩子 1:1 落盘。"""
+    body = await req.json()
+    audit_log(req, body.get("action", "查看运维工作台"), "WORKBENCH",
+              "-", "-", "web")
+    return {"ok": True}
 
 
 @app.post("/api/hosts/test")

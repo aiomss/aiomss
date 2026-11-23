@@ -111,6 +111,12 @@ def public_state():
             "username": h.get("username"),
             "has_password": bool(h.get("password_enc") or h.get("password")),
             "note": h.get("note", ""),
+            "region": h.get("region", ""),
+            "room": h.get("room", ""),
+            "biz_line": h.get("biz_line", ""),
+            "app_level": h.get("app_level", ""),
+            "org": h.get("org", ""),
+            "maintenance": h.get("maintenance", ""),
         })
     return {
         "server": d.get("server", DEFAULT["server"]),
@@ -154,6 +160,13 @@ def upsert_host(payload):
         "port": int(payload.get("port", 22)),
         "username": payload.get("username", "root"),
         "note": payload.get("note", ""),
+        # 运维工作台的资产维度：全部来自用户填写，缺失即计入待治理项
+        "region": str(payload.get("region") or "")[:100],
+        "room": str(payload.get("room") or "")[:100],
+        "biz_line": str(payload.get("biz_line") or "")[:100],
+        "app_level": str(payload.get("app_level") or "")[:100],
+        "org": str(payload.get("org") or "")[:100],
+        "maintenance": str(payload.get("maintenance") or "")[:20],
     }
     if payload.get("password"):
         item["password_enc"] = encrypt(payload["password"])
@@ -215,3 +228,30 @@ def set_server(payload):
     with _lock:
         d["server"].update({k: v for k, v in payload.items() if k in ("host", "port")})
         save()
+
+
+def workbench_config():
+    """运维工作台的只读数据源配置；缺字段时补默认值，不影响既有配置。"""
+    d = load()
+    wb = d.get("workbench")
+    if not isinstance(wb, dict):
+        wb = {"mode": "managed", "cmdb": {}, "monitor": {}}
+        with _lock:
+            d["workbench"] = wb
+            save()
+    return wb
+
+
+def set_workbench(payload):
+    d = load()
+    with _lock:
+        wb = d.setdefault("workbench", {})
+        if "mode" in payload:
+            wb["mode"] = payload["mode"]
+        for kind in ("cmdb", "monitor"):
+            if kind in payload and isinstance(payload[kind], dict):
+                cur = wb.setdefault(kind, {})
+                cur.update({k: v for k, v in payload[kind].items()
+                            if k in ("name", "url", "token", "note")})
+        save()
+    return workbench_config()

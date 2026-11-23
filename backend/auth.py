@@ -31,8 +31,7 @@ LOCK_SECONDS = 60               # 锁定时长
 PBKDF2_ROUNDS = 200_000
 
 DEFAULT_USERNAME = "admin"
-# 示例项目默认口令，仅用于首次初始化生成散列；部署后请立即用 scripts/set_password.py 修改。
-DEFAULT_PASSWORD = "ChangeMe_123456"
+DEFAULT_PASSWORD = "ChangeMe_123456"   # 仅用于首次初始化生成散列，之后不再使用
 
 _CID_RE = re.compile(r"^[0-9a-f]{16,64}$")
 # 去掉 0/O/1/I/l 等易混淆字符
