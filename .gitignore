@@ -22,3 +22,6 @@ temp/
 runtime/
 .DS_Store
 Thumbs.db
+
+# 根目录落盘的原始大图不入库（正式配图在 assets/）
+/*.jpg

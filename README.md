@@ -4,14 +4,11 @@
 > 并让大模型（LLM）充当运维助手——自动执行诊断命令、分析日志、巡检系统、讲解命令，
 > 危险操作先弹窗确认再执行，全过程逐条可审计。
 
-```
-浏览器 (xterm.js 终端 + AI 面板)
-        │  HTTP / SSE
-        ▼
-本机 FastAPI 后端  ──SSH(paramiko)──▶  多台 Linux 主机
-        │
-        └──HTTPS──▶  大模型 API（OpenAI 兼容：DeepSeek / 通义 / 任意兼容端点）
-```
+![AI 运维控制台 aiomss 架构图](assets/aiomss-architecture.jpg)
+
+> 浏览器端（xterm.js 终端 + AI 面板）经 HTTP/SSE 连接本机 FastAPI 后端；后端通过 SSH/SFTP
+> 管理多台 Linux 主机，并通过 HTTPS 调用 OpenAI 兼容的大模型 API。危险操作先弹窗确认，
+> 全过程在本地以文本 1:1 落盘审计。
 
 ---
 
