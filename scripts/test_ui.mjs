@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const PY = 'C:\\Users\\18202\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe';
+// Portable: prefer the project venv, else the python on PATH. No hardcoded personal path.
+const VENV_PY = path.join(ROOT, 'venv', 'Scripts', 'python.exe');
+const PY = fs.existsSync(VENV_PY) ? VENV_PY : 'python';
 const HOST = 'http://127.0.0.1:8899';
 const CDP = 'http://127.0.0.1:9333';
 const ASSETS = path.join(ROOT, 'assets');

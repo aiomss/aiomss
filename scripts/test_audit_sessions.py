@@ -41,8 +41,8 @@ def feed(sid, text, raw=None):
     return audit.feed_output(sid, b, text)
 
 
-ctx = {"user": "admin", "ip": "127.0.0.1", "host": "阿里云主机",
-       "target": "root@8.134.218.149:64922", "sid": "s1"}
+ctx = {"user": "admin", "ip": "127.0.0.1", "host": "示例云主机",
+       "target": "root@203.0.113.20:2222", "sid": "s1"}
 ctx_win = dict(ctx, cols=80, rows=8)
 
 # ---- 连接瞬间（open_session 之前）就到达的数据不能被丢掉 ----
@@ -80,7 +80,7 @@ audit.close_session("s1", "正常断开")
 t1 = open(p1, "r", encoding="utf-8").read()
 check("文件头含用户/IP/主机/连接时间",
       all(x in t1 for x in ("# user         : admin", "# ip           : 127.0.0.1",
-                            "# host         : 阿里云主机", "# connected_at")))
+                            "# host         : 示例云主机", "# connected_at")))
 check("正文含终端命令 lsblk / df -h", "cmd=lsblk" in t1 and "cmd=df -h" in t1)
 check("正文含未关联 sid 的下载与 AI 诊断事件",
       "/etc/hosts" in t1 and "type=DIAGNOSE" in t1)
@@ -194,10 +194,10 @@ check("非审计问题不注入上下文（零 token 开销）",
 
 # ---- 前端本地提示也归入同一个窗口 ----
 p6 = audit.open_session("s6", dict(ctx, cols=80, rows=8))
-audit.write_notice("s6", "正在连接 root@8.134.218.149:64922 ...", ctx)
+audit.write_notice("s6", "正在连接 root@203.0.113.20:2222 ...", ctx)
 audit.close_session("s6", "正常断开")
 check("前端本地提示写进终端实录",
-      "正在连接 root@8.134.218.149:64922" in
+      "正在连接 root@203.0.113.20:2222" in
       "\n".join(audit.read_transcript(p6)))
 
 # ---- 进程重启：孤儿会话自动补「异常终止」 ----

@@ -196,10 +196,10 @@ from backend import auth                       # noqa: E402
 cfg = auth.auth_config()
 check("账号配置自动生成", bool(cfg.get("username")) and bool(cfg.get("salt"))
       and bool(cfg.get("password_hash")))
-check("明文密码不落盘", "13660888023" not in json.dumps(store.load().get("auth", {})))
-check("固定账号密码可验证", auth.verify_credentials("admin", "13660888023"))
+check("明文密码不落盘", "ChangeMe_123456" not in json.dumps(store.load().get("auth", {})))
+check("固定账号密码可验证", auth.verify_credentials("admin", "ChangeMe_123456"))
 check("错误密码被拒绝", not auth.verify_credentials("admin", "wrong-password"))
-check("错误用户名被拒绝", not auth.verify_credentials("root", "13660888023"))
+check("错误用户名被拒绝", not auth.verify_credentials("root", "ChangeMe_123456"))
 
 cid, code, png = auth.make_captcha()
 check("验证码是真正的 PNG 图片", png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 1000, len(png))

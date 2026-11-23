@@ -73,7 +73,7 @@ check("验证码返回真实 PNG", r.status_code == 200 and r.content[:8] == PNG
 check("验证码响应禁止缓存", "no-store" in r.headers.get("cache-control", ""),
       r.headers.get("cache-control"))
 
-r = c.post("/api/auth/login", json={"username": "admin", "password": "13660888023",
+r = c.post("/api/auth/login", json={"username": "admin", "password": "ChangeMe_123456",
                                     "captcha": "!!!!", "cid": "a" * 32})
 check("错误验证码被拒绝", r.status_code == 400 and not r.json().get("ok"), r.status_code)
 
@@ -83,7 +83,7 @@ r = c.post("/api/auth/login", json={"username": "admin", "password": "wrong-pwd"
 check("错误密码被拒绝", r.status_code == 401 and not r.json().get("ok"), r.status_code)
 
 _, code3 = fresh_captcha(c, "c" * 32)
-r = c.post("/api/auth/login", json={"username": "admin", "password": "13660888023",
+r = c.post("/api/auth/login", json={"username": "admin", "password": "ChangeMe_123456",
                                     "captcha": code3, "cid": "c" * 32})
 check("正确凭据登录成功", r.status_code == 200 and r.json().get("ok"), r.text[:150])
 set_cookie = r.headers.get("set-cookie", "")

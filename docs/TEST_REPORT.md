@@ -99,7 +99,7 @@ SKIP 格全部是「该层职责不涉及该问题」，而非漏测或假装通
 
 ## 六、环境说明
 
-- Python：`Python 3.13.14`（`C:\Users\18202\.workbuddy\binaries\python\versions\3.13.12\python.exe`）
+- Python：`Python 3.13.14`（本机 venv 或 PATH 上的 Python，见 `scripts/test_all.py` 自动探测）
 - Node：`v24.14.0`（使用全局 `WebSocket`，CDP 零第三方依赖）
 - 浏览器：`C:\Program Files\Google\Chrome\Application\chrome.exe`
 - L6 测试服务：`127.0.0.1:8899`，`scripts/ui_server.py` **同进程**签发 `auth.issue_session("admin")` 并运行 `backend.app:app`（内存 session 才有效）；Chrome CDP 端口 `9333`。**未占用 8848**。

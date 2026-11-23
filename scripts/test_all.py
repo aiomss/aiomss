@@ -17,7 +17,14 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PY = r"C:\Users\18202\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+# 可移植：优先项目 venv，其次当前解释器，最后 PATH 上的 python（不硬编码任何个人路径）。
+_VENV_PY = os.path.join(ROOT, "venv", "Scripts", "python.exe")
+if os.path.exists(_VENV_PY):
+    PY = _VENV_PY
+elif sys.executable and os.path.basename(sys.executable).lower().startswith("python"):
+    PY = sys.executable
+else:
+    PY = "python"
 NODE = "node"
 REPORT = os.path.join(ROOT, "docs", "TEST_REPORT.md")
 
