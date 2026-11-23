@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 运维控制台</title>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2.5" y="3.5" width="19" height="17" rx="3"></rect>
+        <path d="M6.5 9l3 3-3 3M12 15h5"></path>
+      </svg>
+    </span>
+    <span class="brand-name">AI 运维控制台</span>
+    <small>SSH 多主机 · AI 诊断</small>
+  </div>
+  <div class="top-right">
+    <span id="connBadge" class="badge off">未连接</span>
+    <span id="userTag" class="user-tag">admin</span>
+    <button id="btnAudit" class="btn ghost" title="查看本地终端审计：终端打印过的全部内容 1:1 留档">🧾 审计日志</button>
+    <button id="btnPrefs" class="btn ghost" title="会话保活（反闲置）与界面配色">⚙ 设置</button>
+    <button id="btnSettings" class="btn ghost" title="修改 AI 接口地址、Key 与模型">⚙ API修改</button>
+    <button id="btnLogout" class="btn ghost" title="退出登录">⏻ 退出</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- ============ 左侧：主机列表（可折叠） ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <span class="side-title">主机列表</span>
+      <span class="side-head-btns">
+        <button id="btnAddHost" class="btn-add" title="添加 Linux 主机">+ 添加</button>
+        <button id="btnSideToggle" class="side-toggle" title="收起主机列表">◀</button>
+      </span>
+    </div>
+    <div id="hostList" class="host-list"></div>
+  </aside>
+
+  <!-- ============ 主区：SSH 终端独占 ============ -->
+  <main class="main">
+
+    <!-- 真·交互式 SSH 终端 -->
+    <section class="panel term-panel" id="termPanel">
+      <div class="panel-head">
+        <div id="termTabs" class="tabs"></div>
+        <div class="term-actions">
+          <button id="btnFileDownload" class="btn file-btn" title="从服务器下载文件">⬇ 文件下载</button>
+          <button id="btnFileUpload" class="btn file-btn" title="上传本机文件到服务器">⬆ 文件上传</button>
+          <button id="btnReconnect" class="icon-btn" title="重新连接">⟳</button>
+          <button id="btnClearTerm" class="icon-btn" title="清屏">⌫</button>
+          <button id="btnFullTerm" class="icon-btn" title="放大 / 还原终端">⛶</button>
+        </div>
+      </div>
+      <div id="termHost" class="term-host"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ 右侧：AI 助手抽屉（默认隐藏，点右缘图标展开） ============ -->
+<button id="btnAiToggle" class="ai-launcher" title="展开 AI 助手">
+  <span class="ai-launcher-ico">✦</span>
+  <span class="ai-launcher-text">AI<br>助手</span>
+</button>
+
+<aside id="aiDrawer" class="ai-drawer" aria-label="AI 助手">
+  <!-- 左右拖拽条：调节 AI 面板宽度，往两边挤压 -->
+  <div id="aiResizer" class="ai-resizer" title="左右拖动，调整 AI 面板宽度"><span class="resizer-grip"></span></div>
+  <section class="panel ai-panel">
+    <div class="panel-head ai-head">
+      <div class="ai-title"><span class="ai-ico">✦</span> AI 运维</div>
+      <div class="mode-tabs">
+        <button data-mode="diagnose" class="active">执行诊断</button>
+        <button data-mode="ask">命令问答</button>
+      </div>
+      <button id="btnAiClose" class="icon-btn" title="收起 AI 助手">✕</button>
+    </div>
+
+    <div class="drawer-quick">
+      <span class="drawer-quick-label">快捷任务</span>
+      <div id="quickTasks" class="quick-list"></div>
+    </div>
+
+    <div id="aiBody" class="ai-body">
+        <div class="ai-results" id="aiResults">
+          <!-- 进度 + 可折叠思考过程（随结果区一起滚动） -->
+          <div id="runMeta" class="run-meta hidden">
+            <div id="progressBox" class="progress-box"></div>
+            <div id="reasoningBox" class="reasoning-box hidden"></div>
+          </div>
+          <div id="steps" class="steps"></div>
+          <div id="summary" class="summary hidden"></div>
+        </div>
+
+        <!-- 输入控制区：固定在面板底部（贴近页面底部），结果区在其上方滚动 -->
+        <div class="ai-controls">
+          <div class="ctl-row">
+            <label>目标 <select id="selHost"></select></label>
+            <label>AI 接入 <select id="selProfile"></select></label>
+            <label>模型 <select id="selModel"></select></label>
+            <button id="btnRefreshModels" class="icon-btn" title="从 API 拉取模型列表">⟳</button>
+            <span class="spacer"></span>
+            <span class="quota">积分: <b id="quotaVal">—</b></span>
+            <button id="btnRefreshQuota" class="icon-btn" title="刷新">↻</button>
+          </div>
+
+          <div class="ctl-row2">
+            <label class="chk"><input type="checkbox" id="chkReadOnly" checked> 只读模式</label>
+            <label class="chk"><input type="checkbox" id="chkAuto"> 自动批准</label>
+            <span class="hint">涉及删除、重启、改配置、DDL/DML 时会先弹确认</span>
+          </div>
+
+          <textarea id="promptInput" rows="3"
+            placeholder="写清要求，例如：/ 分区使用率 100%，先定位是哪个目录占用，再给出清理方案并处理（保留最近 7 天日志）"></textarea>
+
+          <div class="btn-row">
+            <button id="btnRun" class="btn primary">▶ 开始诊断</button>
+            <button id="btnStop" class="btn" disabled>■ 停止</button>
+            <button id="btnClear" class="btn ghost" title="清空结果；若任务卡住，可先停止再清空以恢复按钮">清空 / 重置</button>
+            <span id="runStatus" class="run-status">还没有执行步骤。</span>
+          </div>
+        </div>
+    </div>
+  </section>
+</aside>
+
+<!-- ============ 弹窗：文件下载 / 文件上传（SFTP 浏览） ============ -->
+<div id="modalFiles" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <b id="fileModalTitle">文件下载</b>
+      <span id="fileModalHost" class="file-host-tag"></span>
+      <button class="x" data-close="modalFiles">×</button>
+    </div>
+    <div class="modal-body file-body">
+      <div class="file-toolbar">
+        <button id="fileUp" class="icon-btn" title="上级目录">↩</button>
+        <button id="fileHome" class="icon-btn" title="回到主目录">🏠</button>
+        <input id="filePath" class="file-path" placeholder="/" title="粘贴绝对路径后回车跳转">
+        <input id="fileSearch" class="file-search" placeholder="搜索当前目录文件名，支持粘贴">
+        <button id="fileRefresh" class="icon-btn" title="刷新">⟳</button>
+      </div>
+      <div id="fileList" class="file-list"></div>
+      <div id="fileMsg" class="file-msg"></div>
+      <div id="fileProgress" class="file-progress hidden">
+        <div class="fp-row">
+          <span id="fpText" class="fp-text">传输中…</span>
+          <span id="fpPct" class="fp-pct">0%</span>
+          <button id="fpCancel" class="btn danger-btn">取消</button>
+        </div>
+        <div class="fp-bar"><div id="fpFill" class="fp-fill"></div></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span id="fileHint" class="file-hint">点击文件即可下载 · 双击目录进入</span>
+      <span class="spacer"></span>
+      <input type="file" id="filePick" class="hidden">
+      <button id="btnPickUpload" class="btn primary hidden">⬆ 选择本机文件并上传</button>
+      <button class="btn ghost" data-close="modalFiles">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 弹窗：添加/编辑主机 ============ -->
+<div id="modalHost" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><b>添加 Linux 主机</b><button class="x" data-close="modalHost">×</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label>名称 <input id="hName" placeholder="testdb (root)"></label>
+        <label>地址 <input id="hHost" placeholder="192.168.88.10"></label>
+        <label>端口 <input id="hPort" type="number" value="22"></label>
+        <label>用户名 <input id="hUser" value="root"></label>
+        <label class="full">密码 <input id="hPass" type="password" placeholder="SSH 登录密码"></label>
+        <label class="full">备注 <input id="hNote" placeholder="可选"></label>
+      </div>
+      <div id="hTestMsg" class="test-msg"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnTestHost" class="btn">测试连接</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-close="modalHost">取消</button>
+      <button id="btnSaveHost" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 弹窗：设置（会话保活 + 界面配色） ============ -->
+<div id="modalPrefs" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head"><b>设置 · 会话保活与界面配色</b><button class="x" data-close="modalPrefs">×</button></div>
+    <div class="modal-body">
+      <div class="pref-section">
+        <div class="pref-title">🛡 反闲置保活（防止 SSH 因长时间无流量被防火墙/NAT 掐断）</div>
+        <div class="pref-row">
+          <label class="chk"><input type="checkbox" id="prefKaOn"> 启用：定期向服务器发送字符保持连接</label>
+        </div>
+        <div class="pref-grid">
+          <label>发送字符 <input id="prefKaChar" maxlength="4" placeholder="空格"></label>
+          <label>每隔（秒） <input id="prefKaSec" type="number" min="15" max="3600" value="180"></label>
+          <label class="chk full"><input type="checkbox" id="prefKaClean" checked> 发送后自动退格清除，保持屏幕干净（推荐）</label>
+        </div>
+        <div class="pref-tip">参考 Xshell「发送字符 每 180 秒」。改动即时生效，对所有已连接终端起作用。</div>
+      </div>
+      <div class="pref-section">
+        <div class="pref-title">🎨 界面配色</div>
+        <div id="themeGrid" class="theme-grid"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button class="btn ghost" data-close="modalPrefs">关闭</button>
+      <button id="btnSavePrefs" class="btn primary">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 弹窗：命令审计（按会话窗口生成文本文件） ============ -->
+<div id="modalAudit" class="modal hidden">
+  <div class="modal-card audit-card">
+    <div class="modal-head"><b>🧾 终端审计 · 会话窗口全量实录</b><button class="x" data-close="modalAudit">×</button></div>
+    <div class="modal-body audit-body">
+      <div class="audit-path-box">
+        <div class="audit-path-label">本地会话文档目录（UTF-8 纯文本 · 每次「连接 → 断开」生成一个「用户名_时间.txt」）</div>
+        <div class="audit-path-row">
+          <code id="auditPath">读取中…</code>
+          <button id="btnAuditCopy" class="btn ghost tiny" title="复制完整目录路径">复制路径</button>
+          <button id="btnAuditReveal" class="btn ghost tiny" title="在资源管理器中打开会话目录">打开文件夹</button>
+        </div>
+        <div class="audit-tip">
+          每个文件就是一次完整会话窗口：头部写明「<b>哪个用户 · 什么时间 · 从哪个 IP · 在哪台主机</b>」，
+          正文把<b>该终端上打印过的全部内容（命令回显、命令输出、报错、提示符、登录横幅）1:1 转录为纯文本</b>，
+          不删减、不截断，会话进行中也能实时看到内容增长；穿插的「# [事件]」行带精确时间戳，
+          标注连接断开、上传下载与 AI 操作，末尾附断开时间、持续时长与实录行数。<br>
+          同目录 <code>raw/</code> 下的同名 .raw 保存未经处理的原始字节流，可逐字节复核；口令与 Token 已脱敏。<br>
+          直接问 AI：「<b>审计：admin 今天执行过哪些命令？</b>」AI 会自动检索整个会话目录作答。
+        </div>
+      </div>
+      <div class="audit-stats" id="auditStats">正在读取会话文档…</div>
+
+      <div class="audit-main">
+        <!-- 左：会话窗口文件列表 -->
+        <div class="audit-sessions">
+          <div class="audit-sec-title">会话窗口 <span id="auditSessionCount" class="audit-count">0</span></div>
+          <div class="audit-session-list" id="auditSessionList"></div>
+        </div>
+
+        <!-- 右：上＝所选会话全文，下＝跨会话检索；两块等分且各自有界滚动 -->
+        <div class="audit-detail">
+          <div class="audit-pane">
+            <div class="audit-sec-title">
+              <span id="auditDetailTitle">完整会话记录</span>
+              <button id="btnAuditDownloadRaw" class="btn ghost tiny" title="下载未经处理的原始字节流（含 ANSI）">⬇ 原始流</button>
+              <button id="btnAuditDownloadOne" class="btn ghost tiny" title="下载当前会话文本文件">⬇ 下载此会话</button>
+            </div>
+            <div class="audit-meta" id="auditMeta">请从左侧选择一个会话窗口</div>
+            <pre class="audit-text" id="auditText">每个会话窗口对应一个独立的 .txt 文件，点左侧即可查看完整原文。</pre>
+          </div>
+
+          <div class="audit-pane">
+            <div class="audit-sec-title">全局检索（跨所有会话窗口）</div>
+            <div class="audit-filters">
+              <input id="auditKeyword" placeholder="搜索命令 / 终端输出原文 / 用户 / 主机 / IP / 会话文件名，回车查询">
+              <select id="auditType">
+                <option value="">全部类型</option>
+                <option value="CMD">终端命令 CMD</option>
+                <option value="AI_CMD">AI 执行命令</option>
+                <option value="CONNECT">连接 / 断开</option>
+                <option value="UPLOAD">上传 / 下载</option>
+                <option value="DIAGNOSE">AI 诊断 / 问答</option>
+              </select>
+              <select id="auditLimit">
+                <option value="100">最近 100 条</option>
+                <option value="300" selected>最近 300 条</option>
+                <option value="1000">最近 1000 条</option>
+              </select>
+              <button id="btnAuditRefresh" class="btn primary tiny">查询 / 刷新</button>
+            </div>
+            <div class="audit-table-wrap">
+              <table class="audit-table">
+                <thead><tr><th>时间</th><th>用户</th><th>主机</th><th>类型</th><th>操作内容</th><th>会话文件</th></tr></thead>
+                <tbody id="auditRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnAuditAsk" class="btn ghost">✦ 让 AI 分析这些记录</button>
+      <button id="btnAuditExport" class="btn ghost">⬇ 导出全部会话文本</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-close="modalAudit">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 弹窗：API修改 ============ -->
+<div id="modalSettings" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head"><b>API修改 · AI 接入配置</b><button class="x" data-close="modalSettings">×</button></div>
+    <div class="modal-body">
+      <p class="tip">兼容 OpenAI 格式。可<b>新增多套 API</b>（不同厂商 / 不同 Key）并存，诊断时在 AI 面板的「AI 接入」下拉框随时切换。DeepSeek 官方：<code>https://api.deepseek.com</code>。API Key 仅保存在本机后端配置中。</p>
+      <div class="prof-bar">
+        <span class="prof-label">当前接入</span>
+        <select id="sProfileSel"></select>
+        <button id="btnNewProfile" class="btn">＋ 新增 API</button>
+        <button id="btnDelProfile" class="btn danger-ghost" title="删除当前接入">删除此接入</button>
+        <span class="spacer"></span>
+      </div>
+      <div class="form-grid">
+        <label>名称 <input id="sName" placeholder="DeepSeek 官方"></label>
+        <label>标识 ID <input id="sId" placeholder="留空自动生成"></label>
+        <label class="full">API 地址 <input id="sUrl" placeholder="https://api.deepseek.com"></label>
+        <label class="full">API Key <input id="sKey" type="password" placeholder="留空表示不修改"></label>
+        <label class="full">模型列表（逗号分隔） <input id="sModels" placeholder="deepseek-flash, deepseek-v4-pro"></label>
+        <label>默认模型 <input id="sModel" placeholder="deepseek-flash"></label>
+        <label>推理强度 <select id="sEffort"><option value="low">low（快）</option><option value="high">high</option><option value="max">max</option></select></label>
+        <label>积分显示 <input id="sQuota" placeholder="可选"></label>
+        <label>服务端口 <input id="sPort" type="number" value="8848"></label>
+      </div>
+      <div id="sTestMsg" class="test-msg"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="btnTestAI" class="btn">测试 API</button>
+      <button id="btnPullModels" class="btn">拉取模型</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-close="modalSettings">取消</button>
+      <button id="btnSaveSettings" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 危险命令确认条：必须放在 body 直属层级。
+     若放在带 transform 的 AI 抽屉内部，position:fixed 会改为相对抽屉定位，
+     抽屉收起时整条会被推出视口，用户将点不到「批准执行」。 -->
+<div id="confirmDock" class="confirm-dock hidden">
+  <div class="confirm-bar">
+    <div class="cd-head">
+      <span class="cd-ico">⚠</span>
+      <div class="cd-title">
+        <b>需要你确认这条命令</b>
+        <small id="cdStep">第 1 步 · 写操作</small>
+      </div>
+      <span id="cdCountdown" class="cd-count">120s</span>
+    </div>
+    <pre id="cdCmd" class="cd-cmd"></pre>
+    <div id="cdPurpose" class="cd-purpose"></div>
+    <div id="cdReasons" class="cd-reasons"></div>
+    <div class="cd-foot">
+      <span class="cd-tip">确认后才会执行 · 超时自动拒绝 · 可先滚动查看上方输出</span>
+      <span class="spacer"></span>
+      <button id="cdReject" class="btn">拒绝</button>
+      <button id="cdApprove" class="btn approve">批准执行</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/assets/render.js"></script>
+<script src="/static/assets/app.js"></script>
+</body>
+</html>

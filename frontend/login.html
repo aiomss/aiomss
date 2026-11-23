@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>登录 · AI 运维控制台</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    background:radial-gradient(1200px 700px at 15% 10%,#2b3a6b 0%,transparent 60%),
+               radial-gradient(900px 600px at 90% 90%,#1a4a63 0%,transparent 55%),
+               linear-gradient(135deg,#141d35 0%,#1d2b4d 55%,#182a44 100%);
+    color:#1c2740;display:flex;align-items:center;justify-content:center;padding:24px;
+  }
+  .wrap{width:900px;max-width:100%;display:grid;grid-template-columns:1fr 400px;
+    border-radius:20px;overflow:hidden;box-shadow:0 30px 90px rgba(5,12,30,.5)}
+  .intro{padding:54px 46px;color:#e5ecff;
+    background:linear-gradient(150deg,rgba(76,99,230,.22),rgba(60,200,190,.08) 60%,transparent);
+    border-right:1px solid rgba(255,255,255,.09)}
+  .brand{display:flex;align-items:center;gap:11px;font-size:16px;font-weight:650;letter-spacing:.4px}
+  .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,#4ed6c4,#4c7cf0);color:#fff;font-size:17px;
+    box-shadow:0 4px 14px rgba(76,124,240,.4)}
+  h1{font-size:30px;line-height:1.4;margin:46px 0 16px;font-weight:700;letter-spacing:.5px}
+  .sub{font-size:13.5px;line-height:2;color:#aebfdf;max-width:400px}
+  .feats{margin-top:40px;display:flex;flex-direction:column;gap:13px}
+  .feat{display:flex;align-items:center;gap:11px;font-size:12.5px;color:#c9d6f2}
+  .feat i{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;
+    font-style:normal;font-size:11px;background:rgba(255,255,255,.1);color:#8ff0d5}
+  .foot{margin-top:44px;font-size:11px;color:#8497bd;line-height:1.9}
+  .form{background:#fff;padding:48px 38px 38px}
+  .ttl{font-size:20px;font-weight:700;color:#22304d;margin-bottom:6px}
+  .tip{font-size:12px;color:#8b98ae;margin-bottom:28px}
+  label{display:block;font-size:11.5px;font-weight:650;color:#5c6880;margin:0 0 7px}
+  .field{margin-bottom:18px}
+  input[type=text],input[type=password]{
+    width:100%;height:42px;border:1px solid #dfe6f2;border-radius:9px;padding:0 13px;
+    font-size:13px;outline:0;transition:.15s;background:#fbfcff}
+  input:focus{border-color:#4c63e6;box-shadow:0 0 0 3px rgba(76,99,230,.13);background:#fff}
+  .pw{position:relative}
+  .pw input{padding-right:52px}
+  .pw button{position:absolute;right:6px;top:6px;height:30px;border:0;background:transparent;
+    color:#8b98ae;font-size:11.5px;cursor:pointer;padding:0 9px;border-radius:6px}
+  .pw button:hover{background:#f0f3fa;color:#4c63e6}
+  .cap-row{display:flex;gap:10px;align-items:center}
+  .cap-row input{flex:1;min-width:0;text-transform:uppercase;letter-spacing:2px;font-weight:600}
+  .cap-img{width:120px;height:42px;border:1px solid #dfe6f2;border-radius:8px;cursor:pointer;
+    object-fit:cover;background:#f4f7fd;flex-shrink:0}
+  .cap-img:hover{border-color:#4c63e6}
+  .cap-hint{font-size:10.5px;color:#9aa7bc;margin-top:7px}
+  .cap-hint span{color:#4c63e6;cursor:pointer}
+  .cap-hint span:hover{text-decoration:underline}
+  .err{min-height:20px;font-size:11.5px;color:#d9485a;margin:2px 0 10px;line-height:1.6}
+  .btn{width:100%;height:43px;border:0;border-radius:9px;cursor:pointer;font-size:13.5px;
+    font-weight:650;color:#fff;background:linear-gradient(135deg,#4c63e6,#6a5be8);
+    box-shadow:0 5px 16px rgba(76,99,230,.3);transition:.15s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .safe{margin-top:22px;padding-top:18px;border-top:1px solid #eef1f7;
+    font-size:11px;color:#9aa7bc;line-height:1.9}
+  @media(max-width:760px){
+    .wrap{grid-template-columns:1fr;max-width:420px}
+    .intro{display:none}
+    .form{padding:36px 28px 30px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="intro">
+    <div class="brand"><span class="logo">⌘</span> AI 运维控制台</div>
+    <h1>让 AI 帮你<br>看懂并管好 Linux</h1>
+    <div class="sub">多主机 SSH 终端 · 日志异常分析 · 系统巡检 · 命令用法答疑。所有凭据与配置仅保存在本机。</div>
+    <div class="feats">
+      <div class="feat"><i>✓</i> 真交互式终端，Tab 补全 / vim / top 原生可用</div>
+      <div class="feat"><i>✓</i> AI 逐步执行、结果回灌，危险操作先确认</div>
+      <div class="feat"><i>✓</i> 登录鉴权 + 图片验证码，API Key 不下发前端</div>
+    </div>
+    <div class="foot">本地运行 · 不对外暴露数据<br>连续输错 5 次将临时锁定 60 秒</div>
+  </div>
+
+  <div class="form">
+    <div class="ttl">欢迎回来</div>
+    <div class="tip">请输入账号、密码和图片验证码后登录</div>
+
+    <div class="field">
+      <label for="u">用户名</label>
+      <input id="u" type="text" autocomplete="off" spellcheck="false" placeholder="请输入用户名" autofocus>
+    </div>
+    <div class="field">
+      <label for="p">密码</label>
+      <div class="pw">
+        <input id="p" type="password" autocomplete="off" placeholder="请输入密码">
+        <button type="button" id="eye">显示</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="c">图片验证码</label>
+      <div class="cap-row">
+        <input id="c" type="text" maxlength="4" autocomplete="off" spellcheck="false" placeholder="4 位字符">
+        <img id="cap" class="cap-img" alt="验证码" title="点击更换验证码">
+      </div>
+      <div class="cap-hint">不区分大小写 · 看不清？<span id="refresh">点击图片换一张</span></div>
+    </div>
+
+    <div id="err" class="err"></div>
+    <button id="login" class="btn">登 录</button>
+
+    <div class="safe">🔒 登录状态 8 小时有效，空闲时建议点击右上角「退出」。</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let cid = '';
+
+  function newCid() {
+    const a = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  function refresh() {
+    cid = newCid();
+    $('cap').src = '/api/auth/captcha?cid=' + cid + '&t=' + Date.now();
+    $('c').value = '';
+  }
+  $('cap').onclick = refresh;
+  $('refresh').onclick = refresh;
+  $('eye').onclick = () => {
+    const p = $('p');
+    const show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    $('eye').textContent = show ? '隐藏' : '显示';
+  };
+
+  async function submit() {
+    const err = $('err'), btn = $('login');
+    const username = $('u').value.trim(), password = $('p').value, captcha = $('c').value.trim();
+    if (!username || !password || !captcha) { err.textContent = '请填写用户名、密码和验证码'; refreshCaptchaOnly(); return; }
+    err.textContent = '';
+    btn.disabled = true; btn.textContent = '正在登录…';
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, captcha, cid }),
+      });
+      const d = await r.json();
+      if (d.ok) { location.replace('/'); return; }
+      err.textContent = d.message || '登录失败，请重试';
+      $('p').value = '';
+      refresh();
+      $('c').focus();
+    } catch (e) {
+      err.textContent = '无法连接本地服务，请确认服务已启动';
+      refresh();
+    } finally {
+      btn.disabled = false; btn.textContent = '登 录';
+    }
+  }
+  function refreshCaptchaOnly() { $('c').value = ''; refresh(); }
+
+  $('login').onclick = submit;
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

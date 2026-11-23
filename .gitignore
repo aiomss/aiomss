@@ -1,0 +1,24 @@
+# ===== 本机敏感配置（含真实 API Key / 口令散列 / 主机密码，绝不提交） =====
+config/config.json
+config/config.json.tmp
+config/*.bak
+config/*.local.json
+*.env
+*.env.*
+
+# ===== 虚拟环境（由本机 Python 现场创建，体积大且不跨平台） =====
+venv/
+.venv/
+
+# ===== 运行产物：命令审计实录 / 日志（含真实操作与_IP，绝不提交） =====
+audit/
+logs/
+*.log
+
+# ===== 其他运行缓存 =====
+__pycache__/
+*.pyc
+temp/
+runtime/
+.DS_Store
+Thumbs.db

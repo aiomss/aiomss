@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8848
+  },
+  "secret": "",
+  "auth": {
+    "username": "admin",
+    "note": "密码以 PBKDF2 散列保存，首次启动自动生成；修改密码请运行 scripts/set_password.py"
+  },
+  "ai_profiles": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek 官方",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "sk-在这里填你的Key",
+      "models": [
+        "deepseek-flash",
+        "deepseek-v4-pro"
+      ],
+      "default_model": "deepseek-flash",
+      "effort": "low",
+      "quota": ""
+    }
+  ],
+  "hosts": []
+}

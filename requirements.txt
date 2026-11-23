@@ -1,0 +1,9 @@
+# 依赖清单。start.bat 会自行在项目的 .venv 里检测并安装这些包，
+# 无需手动操作；仅在离线/网络异常导致自动安装失败时才需要手动执行：
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+fastapi
+uvicorn
+paramiko
+requests
+cryptography
+pillow
