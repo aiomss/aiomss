@@ -172,8 +172,8 @@ check("app.js 含 host-connect 连接按钮",
 check("app.js 含 disconnectHost", "disconnectHost" in appjs)
 check("app.js 含 hideRunMeta", "hideRunMeta" in appjs)
 check("app.js 含 answer_done 收尾", "answer_done" in appjs)
-check("app.js 含「点击左侧该主机的「连接」按钮」提示",
-      "点击左侧该主机的「连接」按钮" in appjs)
+check("app.js 含「点击终端上方的「连接」按钮」提示",
+      "点击终端上方的「连接」按钮" in appjs)
 init_pos = appjs.find("(async function init()")
 init_tail = appjs[init_pos:] if init_pos >= 0 else ""
 check("init() 起至文件尾不含 openTerminal( （登录不自动连接）",
@@ -342,9 +342,9 @@ check("未登录访问时间窗列表被拦截",
       anon_w.get("/api/workbench/windows").status_code == 401)
 r = c.get("/api/workbench/windows", cookies=CK2)
 _wj = r.json() if r.status_code == 200 else {}
-check("时间窗提供 5 档（含自定义）",
+check("时间窗提供 6 档（含自定义）",
       r.status_code == 200 and [w["key"] for w in _wj.get("windows", [])] ==
-      ["5m", "15m", "30m", "1h", "custom"] and _wj.get("default") == "1h", _wj)
+      ["5m", "10m", "15m", "30m", "1h", "custom"] and _wj.get("default") == "1h", _wj)
 r = c.get("/api/workbench/metrics", cookies=CK2)
 _mj = r.json() if r.status_code == 200 else {}
 check("实时指标接口返回纳管主机的采集快照",

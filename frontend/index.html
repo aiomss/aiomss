@@ -26,6 +26,8 @@
     <button id="btnViewWorkbench" class="view-btn" role="tab" aria-selected="false">📊 运维工作台</button>
   </div>
   <div class="top-right">
+    <button id="btnScreen" class="btn ghost" title="打开运维大屏（全部数据来自纳管主机真实采集与用户输入）">🖥 大屏</button>
+    <button id="btnGlobalRefresh" class="btn ghost" title="重新读取主机、资产、监控、告警、日志与当前页面数据">⟳ 全局刷新</button>
     <span id="connBadge" class="badge off">未连接</span>
     <span id="userTag" class="user-tag">admin</span>
     <button id="btnAudit" class="btn ghost" title="查看本地终端审计：终端打印过的全部内容 1:1 留档">🧾 审计日志</button>
@@ -36,23 +38,60 @@
 </header>
 
 <div class="layout">
-  <!-- ============ 左侧：主机列表（可折叠） ============ -->
-  <aside class="sidebar" id="sidebar">
-    <div class="side-head">
-      <span class="side-title">主机列表</span>
-      <span class="side-head-btns">
-        <button id="btnAddHost" class="btn-add" title="添加 Linux 主机">+ 添加</button>
-        <button id="btnSideToggle" class="side-toggle" title="收起主机列表">◀</button>
-      </span>
-    </div>
-    <div id="hostList" class="host-list"></div>
-  </aside>
+  <!-- 原左侧主机列表竖条已移除：主机统一在工作台「主机管理」中增删改导入导出；
+       SSH 终端只保留一个紧凑的主机选择/连接工具条。 -->
 
   <!-- ============ 主区：SSH 终端独占 ============ -->
   <main class="main">
 
     <!-- ============ 运维工作台：轻量数据观察与下钻（只读） ============ -->
     <section id="workbenchView" class="workbench-view hidden">
+      <div class="wb-shell">
+      <!-- 左侧功能导航：资产管理 / 监控告警 / 日志中心（截图中的功能结构） -->
+      <nav id="wbNav" class="wb-nav" aria-label="工作台功能导航">
+        <button class="wb-nav-item wb-nav-quick" data-page="platform" title="平台导航：各功能域入口">✦ 平台导航</button>
+        <div class="wb-nav-group"><div class="wb-nav-title" role="button" tabindex="0" title="点击展开 / 收起本组菜单">📦 资产管理<span class="wb-nav-caret">▾</span></div>
+          <button class="wb-nav-item active" data-page="dashboard">▣ 仪表盘</button>
+          <button class="wb-nav-item" data-page="rooms">⌂ 机房管理</button>
+          <button class="wb-nav-item" data-page="hosts">▤ 主机管理</button>
+          <button class="wb-nav-item" data-page="network_device">⇄ 网络设备</button>
+          <button class="wb-nav-item" data-page="credential">⚿ 凭据管理</button>
+          <button class="wb-nav-item" data-page="inspection">✓ 主机巡检</button>
+          <button class="wb-nav-item" data-page="db_assets">▥ 数据库管理</button>
+          <button class="wb-nav-item" data-page="middleware">▦ 应用/中间件管理</button>
+        </div>
+        <div class="wb-nav-group"><div class="wb-nav-title" role="button" tabindex="0" title="点击展开 / 收起本组菜单">◉ 监控告警<span class="wb-nav-caret">▾</span></div>
+          <button class="wb-nav-item" data-page="monitor_center">◎ 监控中心</button>
+          <button class="wb-nav-item" data-page="alert_center">▣ 告警中心</button>
+          <button class="wb-nav-item" data-page="alert_events">⚠ 告警事件</button>
+          <button class="wb-nav-item" data-page="alert_policies">⚙ 告警策略</button>
+          <button class="wb-nav-item" data-page="alert_templates">✎ 告警模板</button>
+          <button class="wb-nav-item" data-page="alert_aggregate">▧ 告警聚合</button>
+          <button class="wb-nav-item" data-page="alert_notifications">✉ 告警通知</button>
+          <button class="wb-nav-item" data-page="alert_resources">▤ 告警资源</button>
+          <button class="wb-nav-item" data-page="domain_alert">◎ 域名告警</button>
+          <button class="wb-nav-item" data-page="alert_source">⌁ 告警数据源</button>
+        </div>
+        <div class="wb-nav-group"><div class="wb-nav-title" role="button" tabindex="0" title="点击展开 / 收起本组菜单">▥ DB 数据库<span class="wb-nav-caret">▾</span></div>
+          <button class="wb-nav-item" data-page="db_assets">▣ 数据资产</button>
+          <button class="wb-nav-item" data-page="db_query">⌕ SQL 查询</button>
+          <button class="wb-nav-item" data-page="db_audit">✓ SQL 审核</button>
+          <button class="wb-nav-item" data-page="db_monitor">◉ 监控概览</button>
+        </div>
+        <div class="wb-nav-group"><div class="wb-nav-title" role="button" tabindex="0" title="点击展开 / 收起本组菜单">▤ 日志中心<span class="wb-nav-caret">▾</span></div>
+          <button class="wb-nav-item" data-page="log_manage">▣ 日志管理</button>
+          <button class="wb-nav-item" data-page="log_query">⌕ 日志查询</button>
+          <button class="wb-nav-item" data-page="log_collect">⇩ 日志采集</button>
+          <button class="wb-nav-item" data-page="log_alerts">⚠ 日志告警</button>
+          <button class="wb-nav-item" data-page="log_traces">⇄ 日志链路</button>
+          <button class="wb-nav-item" data-page="log_slow">▤ 数据慢日志</button>
+          <button class="wb-nav-item" data-page="log_access">▤ 业务访问日志</button>
+        </div>
+      </nav>
+      <div class="wb-content">
+      <div id="wbPageDashboard">
+      <input id="hostImportFile" type="file" accept=".json,.csv,application/json,text/csv" class="hidden">
+      <div id="wbCockpit" class="wb-cockpit"></div>
       <div class="wb-head">
         <div>
           <h2>运维工作台 <small>把分散数据按同一口径归集 · 只看不下发</small></h2>
@@ -83,6 +122,7 @@
               <span class="wb-window-pick">
                 <select id="wbWindow" title="选择监控告警的统计时间窗">
                   <option value="5m">最近 5 分钟</option>
+                  <option value="10m">最近 10 分钟</option>
                   <option value="15m">最近 15 分钟</option>
                   <option value="30m">最近 30 分钟</option>
                   <option value="1h" selected>最近 1 小时</option>
@@ -129,12 +169,6 @@
             <div id="wbQualityNote" class="wb-note"></div>
           </div>
 
-          <div class="wb-card">
-            <div class="wb-card-head"><b>可插拔分析插件</b><span>即需即供 · 只读分析</span></div>
-            <div id="wbPlugins" class="wb-plugins"></div>
-            <div id="wbPluginResult" class="wb-plugin-result hidden"></div>
-          </div>
-
           <details class="wb-card wb-sources">
             <summary>只读数据源配置（预留查询接口，不进执行链路）</summary>
             <div class="wb-source-body">
@@ -169,6 +203,62 @@
           </details>
         </div>
       </div>
+      </div><!-- /wbPageDashboard -->
+
+      <!-- 其他功能页：资产管理 / 监控告警 / 日志中心，按左侧导航动态渲染 -->
+      <section id="wbPageGeneric" class="wb-page-generic hidden">
+        <div class="ops-page-head"><h2 id="opsPageTitle">功能页</h2><p id="opsPageTip"></p></div>
+        <div id="opsPageTools" class="ops-tools"></div>
+        <div id="opsPageBody" class="ops-body"></div>
+        <div id="opsPageMsg" class="wb-note"></div>
+      </section>
+      </div><!-- /wb-content -->
+      </div><!-- /wb-shell -->
+    </section>
+
+    <!-- ============ 运维大屏：深色科技风，数据仍来自纳管主机与用户输入 ============ -->
+    <section id="screenView" class="screen-view hidden" aria-label="运维大屏">
+      <div class="screen-frame">
+        <header class="screen-header">
+          <div class="screen-brand"><span class="screen-dot"></span> 运维态势大屏 <small>OPS COMMAND CENTER</small></div>
+          <div class="screen-title">纳管资产 · 实时监控 · 告警态势</div>
+          <div class="screen-clock"><b id="screenTime">--:--:--</b><span id="screenDate">----/--/--</span></div>
+          <button id="btnScreenFull" class="screen-full" title="浏览器全屏显示大屏（再点一次退出全屏）">⛶ 全屏</button>
+          <button id="btnScreenClose" class="screen-close" title="关闭大屏">×</button>
+        </header>
+        <div class="screen-toolbar">
+          <span class="screen-toolbar-label">统计窗口</span>
+          <select id="screenWindow" title="选择大屏统计时间窗">
+            <option value="5m">最近 5 分钟</option>
+            <option value="10m">最近 10 分钟</option>
+            <option value="15m">最近 15 分钟</option>
+            <option value="30m">最近 30 分钟</option>
+            <option value="1h" selected>最近 1 小时</option>
+          </select>
+          <span class="screen-toolbar-note">单位：% / 条 / 台 · 全部来自纳管主机真实采集与用户录入</span>
+        </div>
+        <div id="screenMsg" class="screen-msg"></div>
+        <div class="screen-grid">
+          <div class="screen-col left">
+            <div class="screen-panel"><h3>活跃告警</h3><div id="screenAlerts" class="screen-alert-list"></div></div>
+            <div class="screen-panel"><h3>告警趋势</h3><div id="screenTrend" class="screen-chart"></div></div>
+            <div class="screen-panel"><h3>告警级别分布</h3><div id="screenAlertDist" class="screen-bars"></div></div>
+          </div>
+          <div class="screen-col center">
+            <div class="screen-hero">
+              <div class="screen-ring"><div class="screen-ring-core"><b id="screenCoverage">0%</b><small>监控覆盖</small></div></div>
+              <div id="screenKpis" class="screen-kpis"></div>
+            </div>
+            <div class="screen-panel"><h3>资源实时态势</h3><div id="screenResources" class="screen-resources"></div></div>
+            <div class="screen-panel"><h3>地域分布</h3><div id="screenRegions" class="screen-bars"></div></div>
+          </div>
+          <div class="screen-col right">
+            <div class="screen-panel"><h3>资产构成</h3><div id="screenAssets" class="screen-bars"></div></div>
+            <div class="screen-panel"><h3>采集主机指标</h3><div id="screenMetrics" class="screen-resources"></div></div>
+            <div class="screen-panel"><h3>数据来源</h3><div class="screen-note" id="screenNote">正在读取真实数据…</div></div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 真·交互式 SSH 终端 -->
@@ -176,6 +266,11 @@
       <div class="panel-head">
         <div id="termTabs" class="tabs"></div>
         <div class="term-actions">
+          <input id="termHostSearch" class="term-host-search" type="search" autocomplete="off"
+            placeholder="搜索主机 / 地域 / IP" title="按主机名称、地域或 IP 过滤下面的主机列表">
+          <select id="termHostSelect" class="term-host-select" title="按地域分组的已纳管主机（完整管理请到工作台主机管理）"></select>
+          <button id="btnTermConnect" class="btn tiny" title="连接或断开所选主机的 SSH 会话">连接</button>
+          <button id="btnTermManage" class="btn ghost tiny" title="到工作台主机管理新增/编辑/导入/导出主机">管理主机</button>
           <button id="btnFileDownload" class="btn file-btn" title="从服务器下载文件">⬇ 文件下载</button>
           <button id="btnFileUpload" class="btn file-btn" title="上传本机文件到服务器">⬆ 文件上传</button>
           <button id="btnReconnect" class="icon-btn" title="重新连接">⟳</button>
@@ -202,8 +297,8 @@
     <div class="panel-head ai-head">
       <div class="ai-title"><span class="ai-ico">✦</span> AI 运维</div>
       <div class="mode-tabs">
-        <button data-mode="diagnose" class="active">执行诊断</button>
-        <button data-mode="ask">命令问答</button>
+        <button data-mode="diagnose" class="active">命令执行</button>
+        <button data-mode="ask">AI 问答</button>
       </div>
       <button id="btnAiClose" class="icon-btn" title="收起 AI 助手">✕</button>
     </div>
@@ -227,7 +322,10 @@
         <!-- 输入控制区：固定在面板底部（贴近页面底部），结果区在其上方滚动 -->
         <div class="ai-controls">
           <div class="ctl-row">
-            <label>目标 <select id="selHost"></select></label>
+            <label>类型 <select id="aiTargetType" title="分析目标：主机">
+              <option value="host">主机</option>
+            </select></label>
+            <label id="aiTargetLabel">目标 <select id="selHost"></select></label>
             <label>AI 接入 <select id="selProfile"></select></label>
             <label>模型 <select id="selModel"></select></label>
             <button id="btnRefreshModels" class="icon-btn" title="从 API 拉取模型列表">⟳</button>
@@ -246,7 +344,7 @@
             placeholder="写清要求，例如：/ 分区使用率 100%，先定位是哪个目录占用，再给出清理方案并处理（保留最近 7 天日志）"></textarea>
 
           <div class="btn-row">
-            <button id="btnRun" class="btn primary">▶ 开始诊断</button>
+            <button id="btnRun" class="btn primary">▶ 开始执行</button>
             <button id="btnStop" class="btn" disabled>■ 停止</button>
             <button id="btnClear" class="btn ghost" title="清空结果；若任务卡住，可先停止再清空以恢复按钮">清空 / 重置</button>
             <span id="runStatus" class="run-status">还没有执行步骤。</span>
@@ -469,6 +567,20 @@
   </div>
 </div>
 
+<!-- ============ 弹窗：资产台账 / 日志源 / 通知对象录入 ============ -->
+<div id="modalOpsRecord" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><b id="opsRecordTitle">新增记录</b><button class="x" data-close="modalOpsRecord">×</button></div>
+    <div class="modal-body"><div id="opsRecordFields" class="form-grid"></div>
+      <div id="opsRecordMsg" class="test-msg"></div></div>
+    <div class="modal-foot">
+      <span id="opsRecordTip" class="file-hint"></span><span class="spacer"></span>
+      <button class="btn ghost" data-close="modalOpsRecord">取消</button>
+      <button id="opsRecordSave" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 弹窗：工作台下钻明细（资产质量 / 24 小时告警） ============ -->
 <div id="modalDrill" class="modal hidden">
   <div class="modal-card drill-card">
@@ -517,5 +629,6 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/assets/render.js"></script>
 <script src="/static/assets/app.js"></script>
+<script src="/static/assets/ops_ext.js"></script>
 </body>
 </html>

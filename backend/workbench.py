@@ -51,14 +51,17 @@ RESOURCE_TYPES = [
     {"key": "net", "label": "网络"},
 ]
 
-# 告警阈值（采集指标 -> 判定）；级别沿用团队既有规则，模型不参与定级
+# 告警阈值（采集指标 -> 判定）；级别沿用团队既有规则，模型不参与定级。
+# 默认值只在用户没有设置时兜底；用户可在「告警策略」页面显式修改并落盘。
 THRESHOLDS = {"cpu": 85.0, "mem": 85.0, "disk": 85.0, "net": 10.0}
+ALERT_TEMPLATE_DEFAULT = "{metric} {value}，超过阈值（{host} / {region}）"
 ALERT_LEVEL_SEVERE = 90.0
 ALERT_DEDUP_MINUTES = 10
 
-# 监控时间窗：用户可选 5 分钟 / 15 分钟 / 30 分钟 / 1 小时 / 自定义
+# 监控时间窗：用户可选 5 分钟 / 10 分钟 / 15 分钟 / 30 分钟 / 1 小时 / 自定义
 WINDOWS = [
     {"key": "5m", "label": "最近 5 分钟", "minutes": 5},
+    {"key": "10m", "label": "最近 10 分钟", "minutes": 10},
     {"key": "15m", "label": "最近 15 分钟", "minutes": 15},
     {"key": "30m", "label": "最近 30 分钟", "minutes": 30},
     {"key": "1h", "label": "最近 1 小时", "minutes": 60},
@@ -68,7 +71,8 @@ WINDOW_DEFAULT = "1h"
 # 落盘时只裁剪超过该时长的告警，避免展示窗口切换把历史告警删掉
 ALERT_KEEP_HOURS = 24
 
-# 一条只读命令完成全部采集：CPU 两次采样（间隔 1s）/ 内存 / 根分区 / 网卡错误计数
+# 一条只读命令完成全部采集：CPU 两次采样（间隔 1s）/ 内存 / 根分区 / 网卡错误计数 /
+# GPU（有 nvidia-smi 才有值，没有则为空数组，绝不填示例数字）
 COLLECT_CMD = (
     "echo __AOC_BEGIN__$(date +%s)__; "
     "hostname 2>/dev/null; "
@@ -77,7 +81,13 @@ COLLECT_CMD = (
     "grep -E '^(MemTotal|MemAvailable|MemFree):' /proc/meminfo; "
     "df -P / 2>/dev/null | tail -1; "
     "cat /proc/net/dev 2>/dev/null; "
-    "echo __AOC_END__"
+    "echo __AOC_END__; "
+    "echo __AOC_GPU_BEGIN__; "
+    "command -v nvidia-smi >/dev/null 2>&1 && "
+    "nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,"
+    "memory.used,memory.total,temperature.gpu,power.draw "
+    "--format=csv,noheader,nounits 2>/dev/null || true; "
+    "echo __AOC_GPU_END__"
 )
 
 SOURCE_NOTE = (
@@ -99,6 +109,64 @@ def mode():
     """旧配置里的 demo 一律迁移为 managed：系统只认纳管主机的真实数据。"""
     m = _sources().get("mode", "managed")
     return "managed" if m in ("demo", "", None) else m
+
+
+# ---------------- 告警策略：用户显式配置才生效，未配置时用内置兜底 ----------------
+def thresholds():
+    cfg = (_sources().get("alert_config") or {}).get("thresholds") or {}
+    out = dict(THRESHOLDS)
+    for key in out:
+        try:
+            value = float(cfg.get(key, out[key]))
+            if 0 <= value <= 1000:
+                out[key] = value
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def alert_config():
+    cfg = _sources().get("alert_config") or {}
+    notices = [n for n in (cfg.get("notifications") or [])
+               if isinstance(n, dict) and n.get("name")]
+    return {
+        "ok": True,
+        "thresholds": thresholds(),
+        "template": str(cfg.get("template") or ALERT_TEMPLATE_DEFAULT)[:300],
+        "notifications": [{k: str(n.get(k) or "")[:120]
+                           for k in ("id", "name", "type", "target", "note")}
+                          for n in notices[:50]],
+        "note": "告警阈值、消息模板和通知对象均由用户在此录入；系统只做判定与展示，"
+                "不会自动发送通知，也不保存通知渠道的口令。",
+    }
+
+
+def save_alert_config(payload):
+    payload = payload or {}
+    cfg = _sources().get("alert_config") or {}
+    th = {}
+    for key, default in THRESHOLDS.items():
+        raw = (payload.get("thresholds") or {}).get(key, thresholds()[key])
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = default
+        th[key] = round(max(0.0, min(1000.0, value)), 1)
+    template = str(payload.get("template") or ALERT_TEMPLATE_DEFAULT)[:300]
+    notices = []
+    for n in (payload.get("notifications") or [])[:50]:
+        if not isinstance(n, dict) or not str(n.get("name") or "").strip():
+            continue
+        notices.append({
+            "id": str(n.get("id") or uuid.uuid4().hex[:8])[:40],
+            "name": str(n.get("name") or "")[:120],
+            "type": str(n.get("type") or "其他")[:120],
+            "target": str(n.get("target") or "")[:120],
+            "note": str(n.get("note") or "")[:120],
+        })
+    cfg.update({"thresholds": th, "template": template, "notifications": notices})
+    store.set_workbench({"mode": mode(), "alert_config": cfg})
+    return alert_config()
 
 
 # ---------------- 数据读取（测试可替换这两个函数做隔离） ----------------
@@ -292,12 +360,19 @@ def live_metrics():
         snap = snapshots.get(h.get("id"))
         if not snap:
             continue
+        gpus = snap.get("gpu") or []
+        def avg(field):
+            vals = [g[field] for g in gpus if isinstance(g.get(field), (int, float))]
+            return round(sum(vals) / len(vals), 1) if vals else None
         rows.append({
             "host": h.get("name") or h.get("host") or h.get("id", ""),
             "ip": h.get("host", ""),
             "region": h.get("region") or "未分配地域",
             "cpu": snap.get("cpu"), "mem": snap.get("mem"),
             "disk": snap.get("disk"), "net_errors": snap.get("net_errors"),
+            "gpu_count": len(gpus), "gpu_util": avg("util"),
+            "gpu_mem_util": avg("mem_util"), "gpu_temp": avg("temp"),
+            "gpu_power": avg("power"), "gpu_names": sorted({g.get("name", "") for g in gpus}),
             "at": snap.get("collected_at") or snap.get("at", ""),
         })
     rows.sort(key=lambda r: _parse_time(r.get("at")), reverse=True)
@@ -422,6 +497,72 @@ def alerts(resource="", region="", page=1, size=12, window="1h",
     }
 
 
+def alert_aggregate(dimension="resource", window="1h", start="", end=""):
+    """告警聚合：按用户选择的维度对所选时间窗的真实告警分组。"""
+    if dimension not in ("resource", "host", "region", "level"):
+        dimension = "resource"
+    rows = _recent_alerts(None, window, start, end)
+    grouped = {}
+    for a in rows:
+        key = a.get(dimension) or "未分配"
+        g = grouped.setdefault(key, {"key": key, "count": 0,
+                                     "severe": 0, "hosts": set(), "latest": ""})
+        g["count"] += 1
+        g["severe"] += 1 if a.get("level") == "严重" else 0
+        if a.get("host"):
+            g["hosts"].add(a["host"])
+        if a.get("time", "") > g["latest"]:
+            g["latest"] = a["time"]
+    out = []
+    for key in sorted(grouped):
+        g = grouped[key]
+        g["hosts"] = sorted(g["hosts"])
+        out.append(g)
+    return {"ok": True, "dimension": dimension, "rows": out,
+            "window_label": window_label(window, start, end),
+            "note": "聚合对象为采集告警；数量由所选时间窗内记录直接统计，不额外造数。"}
+
+
+def alert_resources(window="1h", start="", end=""):
+    """告警资源：逐台纳管主机列出是否已有监控快照与所选窗口告警数。"""
+    hosts = _managed_hosts()
+    snapshots = _state()["snapshots"]
+    alerts = _recent_alerts(None, window, start, end)
+    rows = []
+    for h in hosts:
+        hid = h.get("id")
+        rows.append({
+            "id": hid, "host": h.get("name") or h.get("host") or hid,
+            "ip": h.get("host", ""),
+            "region": h.get("region") or "未分配地域",
+            "monitored": "是" if hid in snapshots else "否",
+            "alerts": sum(1 for a in alerts if a.get("host_id") == hid),
+            "collected_at": (snapshots.get(hid) or {}).get("collected_at", ""),
+        })
+    return {"ok": True, "rows": rows, "total": len(rows),
+            "window_label": window_label(window, start, end),
+            "note": "资源清单来自已纳管主机；未采集的主机告警数为 0，不表示健康。"}
+
+
+def dashboard(window="1h", start="", end=""):
+    """驾驶舱：所有卡片由纳管主机、采集快照、告警与资产字段实时汇总。"""
+    ov = overview(window, start, end)
+    metrics = {m["key"]: m for m in ov["metrics"]}
+    live = live_metrics()
+    ag = alert_aggregate("resource", window, start, end)
+    rg = regions(window, start, end)
+    qs = quality_summary()
+    return {
+        "ok": True, "generated_at": _now(), "window_label": ov["window_label"],
+        "managed": ov["managed"], "monitored": ov["monitored"],
+        "coverage": metrics["coverage"]["value"],
+        "alerts": metrics["alerts"]["value"], "quality": metrics["quality"]["value"],
+        "hosts": live["rows"], "regions": rg["rows"],
+        "alert_top": ag["rows"][:8], "quality_top": qs,
+        "note": ov["note"],
+    }
+
+
 # ---------------- SSH 只读采集 ----------------
 def _cpu_totals(line):
     parts = line.split()
@@ -470,9 +611,33 @@ def _parse_collect(text):
         nums = [int(x) for x in line.split()[1:] if x.isdigit()]
         if len(nums) >= 12:
             net_errors += nums[2] + nums[3] + nums[10] + nums[11]
+    # GPU 只在主机真的装了 nvidia-smi 时才有行；没有就返回空列表。
+    gpu = []
+    try:
+        gi = next(n for n, l in enumerate(lines) if "__AOC_GPU_BEGIN__" in l)
+        gj = next(n for n, l in enumerate(lines[gi + 1:], gi + 1)
+                  if "__AOC_GPU_END__" in l)
+        for line in lines[gi + 1:gj]:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 8:
+                continue
+
+            def num(idx):
+                m = re.search(r"-?\d+(?:\.\d+)?", parts[idx])
+                return float(m.group(0)) if m else None
+
+            gpu.append({
+                "index": parts[0], "name": parts[1],
+                "util": num(2), "mem_util": num(3),
+                "mem_used": num(4), "mem_total": num(5),
+                "temp": num(6), "power": num(7),
+            })
+    except (StopIteration, ValueError, IndexError):
+        gpu = []
     return {
         "name": name, "address": address,
         "cpu": cpu, "mem": mem, "disk": disk, "net_errors": net_errors,
+        "gpu": gpu,
         "at": datetime.datetime.fromtimestamp(int(begin.group(1))).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -481,6 +646,16 @@ def _make_alert(host, resource_key, metric, value, message, at, level=None, seve
     """value 是展示用的字符串（如 95.0%），定级必须用原始数值 severity。"""
     if level is None:
         level = "严重" if severity >= ALERT_LEVEL_SEVERE else "警告"
+    ctx = {"metric": metric, "value": value, "resource": resource_key,
+           "host": host.get("name") or host.get("host") or host.get("id", ""),
+           "ip": host.get("host", ""), "region": host.get("region") or "未分配地域",
+           "level": level}
+    try:
+        configured = str((_sources().get("alert_config") or {}).get("template") or "").strip()
+        if configured:
+            message = configured.format(**ctx)[:500]
+    except (KeyError, ValueError, IndexError, AttributeError):
+        pass  # 模板写错时保留系统默认消息，不让采集失败
     return {
         "id": uuid.uuid4().hex[:12],
         "time": at,
@@ -498,23 +673,24 @@ def _make_alert(host, resource_key, metric, value, message, at, level=None, seve
 
 
 def _append_alerts(state, host, snap, at):
-    """按阈值生成告警；同一主机同类指标 10 分钟内不重复记录。"""
+    """按用户配置（或内置兜底）阈值生成告警；同主机同指标 10 分钟内不重复。"""
+    th = thresholds()
     checks = []
-    if snap.get("cpu") is not None and snap["cpu"] >= THRESHOLDS["cpu"]:
+    if snap.get("cpu") is not None and snap["cpu"] >= th["cpu"]:
         checks.append(("cpu", "CPU 使用率", "%.1f%%" % snap["cpu"],
-                       "CPU 使用率 %.1f%% 超过阈值 %.0f%%" % (snap["cpu"], THRESHOLDS["cpu"]),
+                       "CPU 使用率 %.1f%% 超过阈值 %.0f%%" % (snap["cpu"], th["cpu"]),
                        snap["cpu"]))
-    if snap.get("mem") is not None and snap["mem"] >= THRESHOLDS["mem"]:
+    if snap.get("mem") is not None and snap["mem"] >= th["mem"]:
         checks.append(("mem", "内存使用率", "%.1f%%" % snap["mem"],
-                       "内存使用率 %.1f%% 超过阈值 %.0f%%" % (snap["mem"], THRESHOLDS["mem"]),
+                       "内存使用率 %.1f%% 超过阈值 %.0f%%" % (snap["mem"], th["mem"]),
                        snap["mem"]))
-    if snap.get("disk") is not None and snap["disk"] >= THRESHOLDS["disk"]:
+    if snap.get("disk") is not None and snap["disk"] >= th["disk"]:
         checks.append(("disk", "磁盘使用率", "%.0f%%" % snap["disk"],
-                       "根分区使用率 %.0f%% 超过阈值 %.0f%%" % (snap["disk"], THRESHOLDS["disk"]),
+                       "根分区使用率 %.0f%% 超过阈值 %.0f%%" % (snap["disk"], th["disk"]),
                        snap["disk"]))
     prev = state["snapshots"].get(host.get("id"), {})
     delta = (snap.get("net_errors") or 0) - (prev.get("net_errors") or 0)
-    if delta > THRESHOLDS["net"]:
+    if delta > th["net"]:
         checks.append(("net", "网络错误增量", "+%d" % delta,
                        "网卡错误/丢包计数较上次采集增加 %d" % delta, 0.0))
     added = []

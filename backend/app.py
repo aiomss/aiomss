@@ -14,7 +14,7 @@ from fastapi.responses import (StreamingResponse, JSONResponse, FileResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, audit, auth, store, workbench
+from . import agent, ai_targets, audit, auth, ops_center, store, workbench
 from .ai_client import AIClient
 from .ssh_manager import manager
 
@@ -279,6 +279,216 @@ async def wb_audit(req: Request):
     audit_log(req, body.get("action", "查看运维工作台"), "WORKBENCH",
               "-", "-", "web")
     return {"ok": True}
+
+
+# ---------------- 资产管理 / 监控告警 / 日志中心（真实数据口径） ----------------
+@app.get("/api/ops/dashboard")
+def ops_dashboard(window: str = "1h", start: str = "", end: str = ""):
+    return workbench.dashboard(window, start, end)
+
+
+@app.get("/api/ops/alert/config")
+def ops_alert_config():
+    return workbench.alert_config()
+
+
+@app.post("/api/ops/alert/config")
+async def ops_alert_config_save(req: Request):
+    body = await req.json()
+    result = workbench.save_alert_config(body)
+    audit_log(req, "保存告警策略（CPU %s%%，内存 %s%%）" % (
+        result["thresholds"]["cpu"], result["thresholds"]["mem"]),
+        "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.get("/api/ops/alert/aggregate")
+def ops_alert_aggregate(dimension: str = "resource", window: str = "1h",
+                       start: str = "", end: str = ""):
+    return workbench.alert_aggregate(dimension, window, start, end)
+
+
+@app.get("/api/ops/alert/resources")
+def ops_alert_resources(window: str = "1h", start: str = "", end: str = ""):
+    return workbench.alert_resources(window, start, end)
+
+
+@app.get("/api/ops/catalog/meta")
+def ops_catalog_meta():
+    return ops_center.catalog_meta()
+
+
+@app.get("/api/ops/catalog")
+def ops_catalog_list(category: str = "", keyword: str = ""):
+    return ops_center.catalog(category, keyword)
+
+
+@app.post("/api/ops/catalog")
+async def ops_catalog_save(req: Request):
+    body = await req.json()
+    result = ops_center.upsert_catalog(body)
+    if result.get("ok"):
+        audit_log(req, "保存资产台账「%s」" % (result["row"].get("name") or ""),
+                  "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.delete("/api/ops/catalog/{record_id}")
+def ops_catalog_delete(record_id: str):
+    return ops_center.delete_catalog(record_id)
+
+
+@app.get("/api/ops/rooms")
+def ops_rooms():
+    return ops_center.rooms()
+
+
+@app.get("/api/ops/inspection")
+def ops_inspection(window: str = "1h", start: str = "", end: str = ""):
+    return ops_center.inspection(window, start, end)
+
+
+@app.get("/api/ops/logs/meta")
+def ops_logs_meta():
+    return ops_center.log_meta()
+
+
+@app.get("/api/ops/logs/sources")
+def ops_logs_sources():
+    return ops_center.log_sources()
+
+
+@app.post("/api/ops/logs/sources")
+async def ops_logs_source_save(req: Request):
+    body = await req.json()
+    result = ops_center.upsert_log_source(body)
+    if result.get("ok"):
+        audit_log(req, "保存日志源 %s" % (result["row"].get("path") or ""),
+                  "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.delete("/api/ops/logs/sources/{source_id}")
+def ops_logs_source_delete(source_id: str):
+    return ops_center.delete_log_source(source_id)
+
+
+@app.post("/api/ops/logs/collect")
+async def ops_logs_collect(req: Request):
+    body = await req.json()
+    result = ops_center.collect_logs(body.get("source_id", ""))
+    audit_log(req, "采集日志（成功 %d / 失败 %d）" % (
+        result.get("success", 0), result.get("failed", 0)),
+        "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.get("/api/ops/logs/query")
+def ops_logs_query(category: str = "", level: str = "", keyword: str = "",
+                   source_id: str = "", limit: int = 200):
+    return ops_center.query_logs(category, level, keyword, source_id, limit)
+
+
+@app.get("/api/ops/logs/stats")
+def ops_logs_stats():
+    return ops_center.log_stats()
+
+
+@app.get("/api/ops/logs/traces")
+def ops_logs_traces(keyword: str = "", limit: int = 100):
+    return ops_center.log_traces(keyword, limit)
+
+
+# ---------------- 主机台账 / 大屏 / 数据库 / 告警中心 / 域名告警 ----------------
+@app.get("/api/ops/hosts")
+def ops_hosts():
+    return ops_center.hosts()
+
+
+@app.get("/api/ops/hosts/export")
+def ops_hosts_export():
+    payload = ops_center.hosts_export()
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=hosts-export.json",
+                 "Cache-Control": "no-store"})
+
+
+@app.post("/api/ops/hosts/import")
+async def ops_hosts_import(req: Request):
+    return ops_center.import_hosts(await req.json())
+
+
+@app.get("/api/ops/dashboard/detail")
+def ops_dashboard_detail(window: str = "1h"):
+    return ops_center.dashboard_detail(window)
+
+
+@app.get("/api/ops/screen")
+def ops_screen(window: str = "1h"):
+    return ops_center.screen(window)
+
+
+@app.get("/api/ops/db/assets")
+def ops_db_assets():
+    return ops_center.db_assets()
+
+
+@app.get("/api/ops/db/records")
+def ops_db_records(kind: str = ""):
+    return ops_center.db_records(kind)
+
+
+@app.post("/api/ops/db/records")
+async def ops_db_record_save(req: Request):
+    result = ops_center.upsert_db_record(await req.json())
+    if result.get("ok"):
+        audit_log(req, "保存数据库记录「%s」" % (result["row"].get("title") or ""),
+                  "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.delete("/api/ops/db/records/{record_id}")
+def ops_db_record_delete(record_id: str):
+    return ops_center.delete_db_record(record_id)
+
+
+@app.get("/api/ops/db/monitor")
+def ops_db_monitor(window: str = "1h"):
+    return ops_center.db_monitor(window)
+
+
+@app.get("/api/ops/alert/center")
+def ops_alert_center(window: str = "1h"):
+    return ops_center.alert_center(window)
+
+
+@app.get("/api/ops/domains")
+def ops_domains():
+    return ops_center.domains()
+
+
+@app.post("/api/ops/domains")
+async def ops_domain_save(req: Request):
+    result = ops_center.upsert_domain(await req.json())
+    if result.get("ok"):
+        audit_log(req, "保存域名「%s」" % (result["row"].get("name") or ""),
+                  "WORKBENCH", "-", "-", "web")
+    return result
+
+
+@app.delete("/api/ops/domains/{domain_id}")
+def ops_domain_delete(domain_id: str):
+    return ops_center.delete_domain(domain_id)
+
+
+@app.post("/api/ops/domains/check")
+async def ops_domains_check(req: Request):
+    result = ops_center.check_domains((await req.json()).get("id", ""))
+    audit_log(req, "域名探测（成功 %d / 失败 %d）" %
+              (result["success"], result["failed"]), "WORKBENCH", "-", "-", "web")
+    return result
 
 
 @app.post("/api/hosts/test")
@@ -583,16 +793,39 @@ async def sftp_upload(req: Request, host_id: str = "", path: str = "/",
 
 
 # ---------------- AI 诊断 ----------------
+@app.get("/api/agent/targets")
+def agent_targets():
+    """AI 可选目标：主机 / 数据库 / 应用 / 日志，均来自纳管主机或用户录入。"""
+    return ai_targets.list_targets()
+
+
+@app.get("/api/agent/target/context")
+def agent_target_context(type: str = "", id: str = ""):
+    """返回目标的真实数据上下文（预览用）；不含任何口令或密钥。"""
+    result = ai_targets.context(type, id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @app.post("/api/agent/run")
 async def agent_run(req: Request):
     body = await req.json()
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         return JSONResponse({"ok": False, "message": "请输入诊断要求"}, status_code=400)
-    audit_log(req, "发起 AI 诊断：" + audit.sanitize(prompt)[:200], "DIAGNOSE",
-              body.get("host_id", ""), "-", "ai")
+    target_type = str(body.get("target_type") or "host")
+    target_id = str(body.get("target_id") or "")
+    host_id = str(body.get("host_id") or "") if target_type == "host" else ""
+    target_context, target_label = "", ""
+    if target_type != "host":
+        fact = ai_targets.context(target_type, target_id)
+        if not fact.get("ok"):
+            return JSONResponse({"ok": False, "message": fact.get("message", "分析目标无效")},
+                                status_code=400)
+        target_context, target_label = fact["context"], fact["label"]
+    audit_log(req, "发起 AI 诊断（%s）：%s" % (target_type, audit.sanitize(prompt)[:200]),
+              "DIAGNOSE", target_id or host_id, "-", "ai")
     return sse(agent.run(
-        host_id=body.get("host_id", ""),
+        host_id=host_id,
         prompt=prompt,
         profile_id=body.get("profile_id"),
         model=body.get("model"),
@@ -604,6 +837,8 @@ async def agent_run(req: Request):
         user=getattr(req.state, "user", "") or "unknown",
         ip=auth.client_ip(req) or "-",
         audit_context=audit.context_for_ai(prompt),
+        target_context=target_context,
+        target_label=target_label,
     ))
 
 
@@ -625,9 +860,18 @@ async def agent_stop(req: Request):
 async def agent_ask(req: Request):
     body = await req.json()
     prompt = body.get("prompt", "")
-    audit_log(req, "AI 问答：" + audit.sanitize(prompt)[:200], "AI_ASK", "-", "-", "ai")
+    target_type = str(body.get("target_type") or "host")
+    target_id = str(body.get("target_id") or "")
+    target_context, target_label = "", ""
+    if target_type and target_type != "host" and target_id:
+        fact = ai_targets.context(target_type, target_id)
+        if fact.get("ok"):
+            target_context, target_label = fact["context"], fact["label"]
+    audit_log(req, "AI 问答（%s）：%s" % (target_type, audit.sanitize(prompt)[:200]),
+              "AI_ASK", target_id or "-", "-", "ai")
     return sse(agent.ask(prompt, body.get("profile_id"), body.get("model"),
-                         audit_context=audit.context_for_ai(prompt)))
+                         audit_context=audit.context_for_ai(prompt),
+                         target_context=target_context, target_label=target_label))
 
 
 # ---------------- 本地会话审计文档 ----------------

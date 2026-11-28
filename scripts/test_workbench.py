@@ -146,12 +146,12 @@ try:
     en = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M")
     check("自定义区间按起止时间过滤",
           len(workbench._recent_alerts(None, "custom", st, en)) == 1)
-    check("窗口列表含 5 档", len(workbench.WINDOWS) == 5,
+    check("窗口列表含 6 档", len(workbench.WINDOWS) == 6,
           [w["key"] for w in workbench.WINDOWS])
     check("总览告警标签显示所选窗口",
           "5 分钟" in workbench.overview("5m")["metrics"][2]["label"])
     check("插件清单下发窗口选项",
-          len(workbench.plugins()["windows"]) == 5)
+          len(workbench.plugins()["windows"]) == 6)
     check("监控日清插件列名带窗口",
           "5 分钟" in workbench.run_plugin("monitor_daily", "5m")["columns"][1]["label"])
     # 恢复原有注入状态，后续小节不受影响

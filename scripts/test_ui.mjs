@@ -13,9 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-// Portable: prefer project venv, else python on PATH.
-const VENV_PY = path.join(ROOT, 'venv', 'Scripts', 'python.exe');
-const PY = fs.existsSync(VENV_PY) ? VENV_PY : 'python';
+const PY = 'C:\\Users\\18202\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe';
 const HOST = 'http://127.0.0.1:8899';
 const CDP = 'http://127.0.0.1:9333';
 const ASSETS = path.join(ROOT, 'assets');
@@ -156,7 +154,11 @@ async function main() {
     const evalValue = async (expression) => {
       const r = await send('Runtime.evaluate',
         { expression, returnByValue: true, awaitPromise: false });
-      if (r.exceptionDetails) throw new Error(String(r.exceptionDetails.text || 'eval exception'));
+      if (r.exceptionDetails) {
+        const d = r.exceptionDetails;
+        throw new Error(String(d.text || 'eval exception') + ' ' +
+          String((d.exception && (d.exception.description || d.exception.value)) || ''));
+      }
       return r.result && r.result.value;
     };
     const capture = async (file) => {
@@ -167,7 +169,7 @@ async function main() {
     // 截图只用于文档展示：把本机主机清单里的真实 IP 改成示例值，
     // 避免以后把 assets/*.png 同步到公开仓库时泄露生产地址。
     const maskHostAddresses = async () => {
-      await evalValue(`document.querySelectorAll('#hostList .host-meta .s').forEach(function(x){ x.textContent = 'root@example.com:22'; });`);
+      await evalValue(`document.querySelectorAll('#termHostSelect option').forEach(function(x){ x.textContent = 'example-host (root@example.com)'; });`);
     };
 
     await send('Network.enable');
@@ -202,24 +204,22 @@ async function main() {
       domReady = await evalValue(`(() => ({
         state: document.readyState,
         render: typeof window.AiOpsRender,
-        hosts: document.querySelectorAll('#hostList .host-connect').length,
+        hosts: document.querySelectorAll('#termHostSelect option').length,
+        ext: typeof window.OpsExt,
         badge: (document.getElementById('connBadge') || {}).textContent,
         emptyReady: !!document.querySelector('#termHost .term-empty')
       }))()`);
       return domReady && domReady.state === 'complete'
         && domReady.render === 'object' && domReady.hosts > 0
-        && domReady.emptyReady === true;
-    }, 25000, '首页 DOM ready + 主机列表渲染');
+        && domReady.ext === 'object' && domReady.emptyReady === true;
+    }, 25000, '首页 DOM ready + 终端主机选择器渲染');
     check('首页加载完成且 window.AiOpsRender 已挂载', domReady.render === 'object', domReady);
+    check('工作台扩展脚本已挂载（window.OpsExt）', domReady.ext === 'object', domReady);
 
     // ---- 6. DOM 断言（逐项对应 6 个截图问题） ----
     const dom = await evalValue(`(() => {
       const btn = document.getElementById('btnSettings');
-      const items = Array.from(document.querySelectorAll('#hostList .host-item'));
-      const conns = items.map(el => {
-        const b = el.querySelector('.host-connect');
-        return b ? b.textContent.trim() : null;
-      });
+      const items = Array.from(document.querySelectorAll('#termHostSelect option'));
       const badge = document.getElementById('connBadge');
       const empty = document.querySelector('#termHost .term-empty');
       const modalTitle = document.querySelector('#modalSettings .modal-head b');
@@ -228,7 +228,9 @@ async function main() {
         bodyText: document.body.innerText || '',
         htmlHead: document.documentElement.innerHTML.slice(0, 300000),
         hostCount: items.length,
-        conns: conns,
+        sidebarGone: !document.querySelector('.sidebar'),
+        connectBtn: (document.getElementById('btnTermConnect') || {}).textContent,
+        manageBtn: !!document.getElementById('btnTermManage'),
         badge: badge ? badge.textContent.trim() : null,
         emptyText: empty ? empty.textContent : '',
         modalTitle: modalTitle ? modalTitle.textContent.trim() : null,
@@ -246,32 +248,109 @@ async function main() {
       && !dom.htmlHead.includes('Tab 补全 · vim / top 可用 · Ctrl+C 中断'));
     check('设置弹窗标题为「API修改 · AI 接入配置」',
       dom.modalTitle === 'API修改 · AI 接入配置', dom.modalTitle);
-    check('主机列表每台都有 .host-connect 且文字为「连接」',
-      dom.hostCount > 0 && dom.conns.length === dom.hostCount
-      && dom.conns.every(t => t === '连接'), JSON.stringify(dom.conns));
+    check('终端主机选择器列出所有已纳管主机', dom.hostCount > 0, dom.hostCount);
+    check('旧左侧主机列表竖条已移除', dom.sidebarGone === true, dom.sidebarGone);
+    check('终端保留连接按钮与主机管理入口',
+      dom.connectBtn === '连接' && dom.manageBtn === true,
+      JSON.stringify({ connectBtn: dom.connectBtn, manageBtn: dom.manageBtn }));
     check('终端徽标显示「未连接」',
       !!dom.badge && dom.badge.includes('未连接') && !dom.badge.includes('已连接'), dom.badge);
-    check('空状态文案含「连接」按钮说明',
-      dom.emptyText.includes('「连接」按钮') || dom.emptyText.includes('登录不会自动连接'),
+    check('空状态文案指向终端上方连接按钮',
+      dom.emptyText.includes('终端上方') || dom.emptyText.includes('登录不会自动连接'),
       dom.emptyText.slice(0, 160));
     check('window.AiOpsRender 清洗/渲染函数已加载', dom.renderLoaded === true);
 
-    // ---- 6.5 本轮修改点：主机「修改」按钮 + 去掉「最大重试」控件 ----
-    const editInfo = await evalValue(`(() => {
-      const items = Array.from(document.querySelectorAll('#hostList .host-item'));
-      const edits = items.map(el => {
-        const b = el.querySelector('.host-edit');
-        return b ? b.textContent.trim() : null;
-      });
-      const hasNumRetry = !!document.getElementById('numRetry');
-      const ctlText = (document.querySelector('.ctl-row2') || {}).textContent || '';
-      return { hostCount: items.length, edits: edits, hasNumRetry: hasNumRetry, ctlText: ctlText };
+    // ---- 6.4 本轮：主机下拉地域分组 + 搜索；AI 目标四类 ----
+    const hostPicker = await evalValue(`(() => {
+      const sel = document.getElementById('termHostSelect');
+      const g = sel.querySelector('optgroup');
+      return { groups: sel.querySelectorAll('optgroup').length,
+               options: sel.options.length, search: !!document.getElementById('termHostSearch'),
+               region: g ? g.label : '' };
     })()`);
-    check('每台主机都有「修改」按钮且文字为「修改」',
-      editInfo.hostCount > 0 && editInfo.edits.length === editInfo.hostCount
-      && editInfo.edits.every(t => t === '修改'), JSON.stringify(editInfo.edits));
-    check('已去掉「最大重试」控件（无 #numRetry 且控制行不含「最大重试」）',
-      !editInfo.hasNumRetry && !editInfo.ctlText.includes('最大重试'), editInfo.ctlText.slice(0, 120));
+    check('主机下拉按地域分组并带搜索框',
+      hostPicker.groups >= 1 && hostPicker.options > 0 && hostPicker.search === true
+      && hostPicker.region.length > 0, JSON.stringify(hostPicker));
+    await evalValue(`(() => {
+      const s = document.getElementById('termHostSearch');
+      s.value = 'no-such-host-zzz'; s.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    const noMatch = await evalValue(`(() => {
+      const sel = document.getElementById('termHostSelect');
+      return { n: sel.options.length, text: (sel.options[0] || {}).textContent || '' };
+    })()`);
+    check('搜索无匹配时给出空提示而不是列出全部主机',
+      noMatch.n <= 1 && noMatch.text.includes('没有匹配'), JSON.stringify(noMatch));
+    await evalValue(`(() => {
+      const s = document.getElementById('termHostSearch');
+      s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); return true;
+    })()`);
+
+    const aiTypes = await evalValue(`(() => ({
+      types: Array.from(document.querySelectorAll('#aiTargetType option')).map(x => x.value),
+      hosts: document.querySelectorAll('#selHost option').length
+    }))()`);
+    check('AI 目标类型只保留主机',
+      aiTypes.types.join(',') === 'host' && aiTypes.hosts > 0, JSON.stringify(aiTypes));
+
+    const aiShot = await evalValue(`(() => {
+      const wasOpen = document.body.classList.contains('ai-open');
+      document.body.classList.add('ai-open');
+      document.getElementById('promptInput').value =
+        '分析当前目标最近 1 小时的状态，按【现象/证据/风险/建议】给出结论。';
+      document.querySelectorAll('#termHostSelect option, #selHost option').forEach(function(x){
+        x.textContent = 'example-host (root@example.com)';
+      });
+      return wasOpen;
+    })()`);
+    await new Promise(r => setTimeout(r, 260));
+    const aiPng = path.join(ASSETS, 'ai-targets-preview.png');
+    check('保存 assets/ai-targets-preview.png（AI 多目标输入区）',
+      await capture(aiPng) > 1000);
+    await evalValue(`(function(wasOpen){
+      if (!wasOpen) document.body.classList.remove('ai-open');
+      document.getElementById('promptInput').value = '';
+      return true;
+    })(${aiShot ? 'true' : 'false'})`);
+    await sleep(320);   // 等抽屉收起动画结束，避免后续布局断言读到过渡中的位置
+
+    // ---- 6.5 本轮修改点：插件模块下线、顶栏全局刷新与大屏入口 ----
+    const featureInfo = await evalValue(`(() => ({
+      plugins: document.querySelectorAll('#wbPlugins .wb-plugin').length,
+      globalRefresh: !!document.getElementById('btnGlobalRefresh'),
+      screen: !!document.getElementById('btnScreen'),
+      noPluginCard: !document.body.innerText.includes('可插拔分析插件')
+    }))()`);
+    check('「可插拔分析插件」模块已从首页去掉',
+      featureInfo.plugins === 0 && featureInfo.noPluginCard === true, featureInfo);
+    check('顶栏提供全局刷新与大屏入口',
+      featureInfo.globalRefresh === true && featureInfo.screen === true, featureInfo);
+
+    // ---- 6.5.1 AI 面板文案：开始执行 / 命令执行 ----
+    const aiLabels = await evalValue(`(() => ({
+      tab: document.querySelector('.mode-tabs [data-mode="diagnose"]').textContent.trim(),
+      run: document.getElementById('btnRun').textContent.trim(),
+      askTab: document.querySelector('.mode-tabs [data-mode="ask"]').textContent.trim()
+    }))()`);
+    check('AI 面板标签为命令执行 / AI 问答，按钮为开始执行',
+      aiLabels.tab === '命令执行' && aiLabels.run === '▶ 开始执行'
+      && aiLabels.askTab === 'AI 问答', JSON.stringify(aiLabels));
+    const runAfterMode = await evalValue(`(() => {
+      document.querySelector('.mode-tabs [data-mode="ask"]').click();
+      const ask = document.getElementById('btnRun').textContent.trim();
+      document.querySelector('.mode-tabs [data-mode="diagnose"]').click();
+      return { ask: ask, diag: document.getElementById('btnRun').textContent.trim() };
+    })()`);
+    check('切回命令执行后按钮仍为开始执行',
+      runAfterMode.ask === '▶ 开始提问' && runAfterMode.diag === '▶ 开始执行',
+      JSON.stringify(runAfterMode));
+    const clearedInput = await evalValue(`(() => {
+      document.getElementById('promptInput').value = '待清空的旧要求';
+      document.getElementById('btnClear').click();
+      return document.getElementById('promptInput').value;
+    })()`);
+    check('清空 / 重置同时清空输入框', clearedInput === '', JSON.stringify(clearedInput));
 
     // ---- 6.6 布局无溢出 / 不重叠（防终端塌陷压住 AI 面板） ----
     const layout = await evalValue(`(() => {
@@ -441,7 +520,7 @@ async function main() {
     check('输入控制区固定在结果区下方（贴近页面底部）', lay.controlsBelowResults === true, JSON.stringify(lay));
     check('结果输出区自带滚动条（overflow:auto）', lay.resultsScroll === 'auto', JSON.stringify(lay));
 
-    // ---- 6.12 运维工作台：总览 / 下钻 / 插件 / 切回终端 ----
+    // ---- 6.12 运维工作台：总览 / 下钻 / 仪表盘扩展 / 切回终端 ----
     await evalValue(`document.getElementById('btnViewWorkbench').click()`);
     await waitUntil(async () =>
       (await evalValue(`document.querySelectorAll('#wbKpis .wb-kpi').length`)) === 4,
@@ -455,7 +534,8 @@ async function main() {
         kpis: kpis,
         regionRows: document.querySelectorAll('#wbRegionRows tr').length,
         quality: document.querySelectorAll('#wbQualityList .wb-quality-item').length,
-        plugins: document.querySelectorAll('#wbPlugins .wb-plugin').length,
+        dashboardCards: document.querySelectorAll('#opsDashboardExt .odb-card').length,
+        dashboardKpis: document.querySelectorAll('#opsDashboardExt .odb-kpi').length,
         bars: document.querySelectorAll('#wbResourceBars .wb-bar-track').length,
         sourceTag: (document.getElementById('wbSourceTag').textContent || '').trim(),
         collectBtn: !!document.getElementById('wbCollect'),
@@ -477,8 +557,9 @@ async function main() {
     check('数据源标签显示已纳管主机数', wb.sourceTag.includes('已纳管'), wb.sourceTag);
     check('界面提供采集监控数据入口', wb.collectBtn === true, wb.collectBtn);
     check('地域维度按纳管主机归集（至少合计行）', wb.regionRows >= 2, wb.regionRows);
-    check('资产质量六个维度、可插拔插件三项、资源类型四条',
-      wb.quality === 6 && wb.plugins === 3 && wb.bars === 4, JSON.stringify(wb));
+    check('资产质量六个维度、资源类型四条已渲染，态势舱扩展已去掉',
+      wb.quality === 6 && wb.bars === 4 && wb.dashboardCards === 0 && wb.dashboardKpis === 0,
+      JSON.stringify(wb));
     check('纳管主机资产台账展示已填参数（行含纳管主机）',
       wb.assetRows >= 1 && /[1-9]\d*\s*台已纳管/.test(wb.assetTotal),
       JSON.stringify({rows: wb.assetRows, total: wb.assetTotal}));
@@ -486,8 +567,8 @@ async function main() {
       /字段已填齐|待治理/.test(wb.qualityTotal), wb.qualityTotal);
     check('切到工作台时终端隐藏且工作台可见',
       wb.termHidden === true && wb.wbVisible === true, JSON.stringify(wb));
-    check('监控时间窗提供 5/15/30 分钟、1 小时、自定义五档',
-      JSON.stringify(wb.winOpts) === JSON.stringify(['5m', '15m', '30m', '1h', 'custom']),
+    check('监控时间窗提供 5/10/15/30 分钟、1 小时、自定义六档',
+      JSON.stringify(wb.winOpts) === JSON.stringify(['5m', '10m', '15m', '30m', '1h', 'custom']),
       JSON.stringify(wb.winOpts));
     check('实时采集指标表已渲染（空态也给提示行）', wb.metricRows >= 1, wb.metricRows);
     check('告警分布显示所选时间窗标签', wb.windowLabel.length > 0, wb.windowLabel);
@@ -516,7 +597,7 @@ async function main() {
       return { msg: m.trim(), btn: b.textContent.trim(), disabled: b.disabled };
     })()`);
     check('刷新按钮给出可见反馈文案',
-      (refreshFeedback.msg.includes('正在重新读取') || refreshFeedback.msg.includes('已刷新'))
+      (refreshFeedback.msg.includes('正在同步全部数据源') || refreshFeedback.msg.includes('已刷新'))
       && (refreshFeedback.btn.includes('刷新中') || refreshFeedback.disabled),
       JSON.stringify(refreshFeedback));
     await waitUntil(async () =>
@@ -539,12 +620,347 @@ async function main() {
       drill.rows > 0 && drill.cols >= 8 && drill.pager.includes('共'), JSON.stringify(drill));
     await evalValue(`document.querySelector('[data-close="modalDrill"]').click()`);
 
-    await evalValue(`document.querySelector('#wbPlugins .wb-plugin button').click()`);
+    // 全局刷新按钮：必须重读全部数据并给出可见反馈
+    await evalValue(`document.getElementById('btnGlobalRefresh').click()`);
+    await waitUntil(async () =>
+      (await evalValue(`(document.getElementById('wbCollectMsg').textContent || '').includes('全局刷新完成')`)),
+      15000, '顶栏全局刷新完成');
+    check('顶栏全局刷新可用且给出完成反馈', true);
+
+    // 回归：冷启动直接进各台账页点「新增」必须打开弹窗、保存并真正落库。
+    // 此前 catalogMeta 只由主机管理 / catalog 页加载，直接进 DB 资产会抛异常且无反应。
+    const catalogCases = [
+      ['db_assets', 'database', '数据库资产'],
+      ['network_device', 'network_device', '网络设备'],
+      ['credential', 'credential', '凭据管理'],
+      ['middleware', 'middleware', '应用/中间件管理'],
+      ['alert_source', 'alert_source', '告警数据源'],
+    ];
+    for (const [page, category, title] of catalogCases) {
+      const name = 'UI自测_' + page + '_' + Date.now();
+      const cookie = 'aoc_session=' + token;
+      await evalValue(`(() => {
+        OPS.catalogMeta = null;
+        document.querySelector('#wbNav [data-page="${page}"]').click();
+        return true;
+      })()`);
+      await waitUntil(async () => await evalValue(`(() =>
+        Array.from(document.querySelectorAll('#opsPageTools button'))
+          .some(x => x.textContent.includes('新增')))()`),
+      12000, title + ' 新增入口');
+
+      const clicked = await evalValue(`(() => {
+        OPS.catalogMeta = null;
+        const b = Array.from(document.querySelectorAll('#opsPageTools button'))
+          .find(x => x.textContent.includes('新增'));
+        if (b) b.click();
+        return !!b;
+      })()`);
+      let opened = false, saved = false, visible = false, persisted = false;
+      try {
+        await waitUntil(async () => await evalValue(`(() =>
+          !document.getElementById('modalOpsRecord').classList.contains('hidden') &&
+          document.querySelectorAll('#opsRecordFields input').length > 0)()`),
+        10000, title + ' 新增弹窗');
+        opened = true;
+        await evalValue(`(() => {
+          const f = document.getElementById('opsRecordFields');
+          f.querySelector('input').value = ${JSON.stringify(name)};
+          document.getElementById('opsRecordSave').click();
+          return true;
+        })()`);
+        await waitUntil(async () => await evalValue(`(() =>
+          document.getElementById('modalOpsRecord').classList.contains('hidden') &&
+          (document.getElementById('opsPageBody').textContent || '').includes(${JSON.stringify(name)}))()`),
+        15000, title + ' 新增保存回显');
+        saved = true; visible = true;
+        const all = await (await fetch(HOST + '/api/ops/catalog?category=' + encodeURIComponent(category),
+          { headers: { Cookie: cookie } })).json();
+        persisted = (all.rows || []).some(r => r.name === name);
+
+        // 同一条记录继续验证「编辑 / 删除」按钮，不允许只做存在性检查。
+        const renamed = name + '_改';
+        let edited = false, editPersisted = false, deleted = false, deletePersisted = false;
+        await evalValue(`(() => {
+          window.__aocConfirm = window.confirm; window.confirm = () => true; return true;
+        })()`);
+        try {
+          const editClicked = await evalValue(`(() => {
+            const row = Array.from(document.querySelectorAll('#opsPageBody tbody tr'))
+              .find(tr => tr.textContent.includes(${JSON.stringify(name)}));
+            const b = row && Array.from(row.querySelectorAll('button'))
+              .find(x => x.textContent.includes('编辑'));
+            if (b) b.click();
+            return !!b;
+          })()`);
+          await waitUntil(async () => await evalValue(`(() =>
+            !document.getElementById('modalOpsRecord').classList.contains('hidden'))()`),
+          10000, title + ' 编辑弹窗');
+          await evalValue(`(() => {
+            document.getElementById('opsRecordFields').querySelector('input').value = ${JSON.stringify(renamed)};
+            document.getElementById('opsRecordSave').click();
+            return true;
+          })()`);
+          await waitUntil(async () => await evalValue(`(() =>
+            document.getElementById('modalOpsRecord').classList.contains('hidden') &&
+            (document.getElementById('opsPageBody').textContent || '').includes(${JSON.stringify(renamed)}))()`),
+          15000, title + ' 编辑生效');
+          edited = !!editClicked;
+          const afterEdit = await (await fetch(HOST + '/api/ops/catalog?category=' + encodeURIComponent(category),
+            { headers: { Cookie: cookie } })).json();
+          editPersisted = (afterEdit.rows || []).some(r => r.name === renamed);
+
+          const delClicked = await evalValue(`(() => {
+            const row = Array.from(document.querySelectorAll('#opsPageBody tbody tr'))
+              .find(tr => tr.textContent.includes(${JSON.stringify(renamed)}));
+            const b = row && Array.from(row.querySelectorAll('button'))
+              .find(x => x.textContent.includes('删除'));
+            if (b) b.click();
+            return !!b;
+          })()`);
+          await waitUntil(async () => await evalValue(`(() =>
+            !(document.getElementById('opsPageBody').textContent || '').includes(${JSON.stringify(renamed)}))()`),
+          15000, title + ' 删除生效');
+          deleted = !!delClicked;
+          const afterDel = await (await fetch(HOST + '/api/ops/catalog?category=' + encodeURIComponent(category),
+            { headers: { Cookie: cookie } })).json();
+          deletePersisted = !(afterDel.rows || []).some(r => r.name === renamed);
+        } catch (e) {
+          // 编辑/删除失败时保持 false，由下面的断言如实报告
+        } finally {
+          await evalValue(`(() => { window.confirm = window.__aocConfirm || window.confirm; return true; })()`);
+        }
+        check(title + '「编辑 / 删除」真实点击并落库',
+          edited && editPersisted && deleted && deletePersisted,
+          JSON.stringify({ edited, editPersisted, deleted, deletePersisted, renamed }));
+      } catch (e) {
+        // 如实记失败，同时尽力关闭弹窗，不影响后续用例
+        try { await evalValue(`document.querySelector('[data-close="modalOpsRecord"]').click()`); } catch { /* ignore */ }
+      }
+      check(title + '「新增」真实点击→保存→回显→落库',
+        clicked && opened && saved && visible && persisted,
+        JSON.stringify({ clicked, opened, saved, visible, persisted, name }));
+
+      // 测试后清理：即使中间断言失败，也按名称从后端删除测试记录
+      const all = await (await fetch(HOST + '/api/ops/catalog?category=' + encodeURIComponent(category),
+        { headers: { Cookie: cookie } })).json();
+      for (const row of (all.rows || []).filter(r => r.name === name || r.name === name + '_改')) {
+        await fetch(HOST + '/api/ops/catalog/' + encodeURIComponent(row.id),
+          { method: 'DELETE', headers: { Cookie: cookie } });
+      }
+    }
+
+    // 主机管理页：新增/导入/导出/删除按钮都在，且数据来自 /api/ops/hosts
+    await evalValue(`document.querySelector('#wbNav [data-page="hosts"]').click()`);
     await waitUntil(async () => await evalValue(`(() => {
-      const b = document.getElementById('wbPluginResult');
-      return !b.classList.contains('hidden') && b.querySelectorAll('tbody tr').length > 0;
-    })()`), 12000, '插件分析结果渲染');
-    check('插件运行结果以表格呈现', true);
+      const tools = document.getElementById('opsPageTools').textContent || '';
+      return tools.includes('导入') && tools.includes('导出') &&
+        document.querySelectorAll('#opsPageBody tbody tr').length > 0;
+    })()`), 15000, '主机管理页面渲染');
+    const hostPage = await evalValue(`(() => {
+      const tools = document.getElementById('opsPageTools').textContent;
+      return {
+        add: tools.includes('新增主机'), import: tools.includes('导入'),
+        export: tools.includes('导出'), file: !!document.getElementById('hostImportFile'),
+        edit: (document.getElementById('opsPageBody').textContent || '').includes('编辑')
+      };
+    })()`);
+    check('主机管理具备新增/导入/导出/编辑/删除入口',
+      hostPage.add && hostPage.import && hostPage.export && hostPage.file && hostPage.edit,
+      JSON.stringify(hostPage));
+
+    // 数据库记录保存按钮：真实点击 -> 写入 -> 表格可见（测试后清理）
+    await evalValue(`document.querySelector('#wbNav [data-page="db_query"]').click()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      document.getElementById('opsPageTitle').textContent === 'SQL 查询' &&
+      document.querySelectorAll('#opsPageTools button').length > 0)()`),
+      12000, 'SQL 查询页');
+    const dbPageState = await evalValue(`(() => ({
+      tools: document.querySelectorAll('#opsPageTools button').length,
+      msg: (document.getElementById('opsPageMsg').textContent || '').trim(),
+      owned: window.OpsExt.OWNED_PAGES.has('db_query')
+    }))()`);
+    check('SQL 查询页工具按钮与数据加载正常',
+      dbPageState.tools > 0 && dbPageState.owned, JSON.stringify(dbPageState));
+    await evalValue(`(() => {
+      document.querySelector('#opsPageTools button').click();
+      const f = document.getElementById('opsRecordFields');
+      f.querySelectorAll('input')[0].value = 'UI自测查询';
+      f.querySelectorAll('textarea')[0].value = 'SELECT 1';
+      f.querySelectorAll('textarea')[1].value = '用户输入的结果';
+      document.getElementById('opsRecordSave').click();
+    })()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      document.getElementById('modalOpsRecord').classList.contains('hidden') &&
+      (document.getElementById('opsPageBody').textContent || '').includes('UI自测查询'))()`),
+      15000, '数据库记录保存生效');
+    check('数据库记录「保存」按钮真正写入并回显到页面', true);
+    {
+      const cookie = 'aoc_session=' + token;
+      const all = await (await fetch(HOST + '/api/ops/db/records?kind=query',
+        { headers: { Cookie: cookie } })).json();
+      const testRow = (all.rows || []).find(r => r.title === 'UI自测查询');
+      if (testRow) {
+        await fetch(HOST + '/api/ops/db/records/' + encodeURIComponent(testRow.id),
+          { method: 'DELETE', headers: { Cookie: cookie } });
+      }
+    }
+
+    // 告警策略保存按钮：保存后给出可见成功反馈
+    await evalValue(`document.querySelector('#wbNav [data-page="alert_policies"]').click()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      (document.getElementById('opsPageBody').textContent || '').includes('保存告警策略'))()`),
+      12000, '告警策略页');
+    await evalValue(`document.querySelector('#opsPageBody button').click()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      (document.getElementById('opsPageMsg').textContent || '').includes('已保存'))()`),
+      12000, '告警策略保存反馈');
+    check('告警策略「保存」按钮有可见成功反馈', true);
+
+    // 日志源保存按钮：非法路径必须在弹窗内给出错误，而不是无反应
+    await evalValue(`document.querySelector('#wbNav [data-page="log_manage"]').click()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      (document.getElementById('opsPageTools').textContent || '').includes('新增日志源'))()`),
+      12000, '日志管理页');
+    await evalValue(`(() => {
+      document.querySelector('#opsPageTools button').click();
+      const f = document.getElementById('opsRecordFields');
+      f.querySelector('select').value = (f.querySelector('select option:last-child') || {}).value || '';
+      f.querySelectorAll('input')[0].value = 'relative.log';
+      document.getElementById('opsRecordSave').click();
+    })()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      (document.getElementById('opsRecordMsg').textContent || '').includes('绝对路径'))()`),
+      12000, '日志源保存校验反馈');
+    check('日志源「保存」按钮有校验反馈（不再无反应）', true);
+    await evalValue(`document.querySelector('[data-close="modalOpsRecord"]').click()`);
+
+    // 运维大屏：打开后必须渲染真实指标面板，并能关闭回到工作台
+    await evalValue(`document.getElementById('btnScreen').click()`);
+    await waitUntil(async () => await evalValue(`(() =>
+      !document.getElementById('screenView').classList.contains('hidden') &&
+      document.querySelectorAll('#screenView .screen-panel').length >= 8)()`),
+      15000, '运维大屏渲染');
+    await waitUntil(async () => await evalValue(`(() => {
+      const m = document.getElementById('screenMsg').textContent || '';
+      return m.includes('窗口：') || m.includes('失败');
+    })()`), 15000, '大屏真实数据加载');
+    const screen = await evalValue(`(() => ({
+      panels: document.querySelectorAll('#screenView .screen-panel').length,
+      kpis: document.querySelectorAll('#screenKpis .screen-kpi').length,
+      screenMsg: (document.getElementById('screenMsg').textContent || '').trim(),
+      bg: getComputedStyle(document.getElementById('screenView')).backgroundColor,
+      note: (document.getElementById('screenNote').textContent || '').trim(),
+      clock: (document.getElementById('screenTime').textContent || '').trim()
+    }))()`);
+    check('大屏渲染面板/KPI/时钟且说明数据口径',
+      screen.panels >= 8 && screen.kpis >= 3 && /^\d{2}:\d{2}:\d{2}$/.test(screen.clock)
+      && screen.note.includes('纳管主机'), JSON.stringify(screen));
+    const screenExtra = await evalValue(`(() => ({
+      windows: Array.from(document.querySelectorAll('#screenWindow option')).map(o => o.value),
+      units: document.querySelectorAll('#screenView .screen-unit').length,
+      resRows: document.querySelectorAll('#screenResources .screen-res').length,
+      resEmpty: (document.querySelector('#screenResources .screen-empty') || {}).textContent || ''
+    }))()`);
+    // 有真实采集数据时指标必须带 % 单位；无纳管数据时大屏显示空状态、不展示模拟指标（同样正确）
+    const screenUnitsOk = screenExtra.resRows > 0
+      ? screenExtra.units > 0
+      : screenExtra.resEmpty.includes('尚未采集纳管主机');
+    check('大屏可切换 5/10/15/30 分钟窗口且指标单位口径正确',
+      JSON.stringify(screenExtra.windows) === JSON.stringify(['5m', '10m', '15m', '30m', '1h'])
+      && screenUnitsOk, JSON.stringify(screenExtra));
+    const screenLayout = await evalValue(`(() => {
+      const box = document.getElementById('screenView');
+      const r = box.getBoundingClientRect();
+      return { top: r.top, left: r.left, width: r.width, height: r.height,
+               vw: window.innerWidth, vh: window.innerHeight,
+               bg: getComputedStyle(box).backgroundColor,
+               fullBtn: !!document.getElementById('btnScreenFull'),
+               fullFn: typeof window.OpsExt.toggleScreenFull === 'function' };
+    })()`);
+    check('大屏铺满整个浏览器且提供全屏按钮',
+      screenLayout.top === 0 && screenLayout.left === 0
+      && Math.abs(screenLayout.width - screenLayout.vw) < 2
+      && Math.abs(screenLayout.height - screenLayout.vh) < 2
+      && screenLayout.fullBtn && screenLayout.fullFn, JSON.stringify(screenLayout));
+    check('大屏背景改成亮蓝紫而非原来的近黑色',
+      screenLayout.bg !== 'rgb(5, 13, 28)' && screenLayout.bg.includes('rgb'),
+      screenLayout.bg);
+    const screenPng = path.join(ASSETS, 'screen-preview.png');
+    check('保存 assets/screen-preview.png（运维大屏）', await capture(screenPng) > 1000);
+    await evalValue(`document.getElementById('btnScreenClose').click()`);
+    check('关闭大屏后回到原视图',
+      (await evalValue(`document.getElementById('screenView').classList.contains('hidden')`)) === true);
+
+    // ---- 6.13 资产管理 / 监控告警 / 日志中心 / 态势舱 ----
+    const navInfo = await evalValue(`(() => ({
+      items: document.querySelectorAll('#wbNav .wb-nav-item').length,
+      groups: Array.from(document.querySelectorAll('#wbNav .wb-nav-title')).map(x => x.textContent.trim()),
+      cockpit: document.querySelectorAll('#wbCockpit .cockpit-panel').length,
+      cockpitColor: getComputedStyle(document.getElementById('wbCockpit')).backgroundImage.includes('gradient')
+    }))()`);
+    check('左侧四组功能导航覆盖资产/监控/DB/日志全部菜单',
+      navInfo.items >= 30 && navInfo.groups.length === 4, JSON.stringify(navInfo));
+    const platNav = await evalValue(`(() => {
+      const nav = document.getElementById('wbNav');
+      const first = nav.querySelector('.wb-nav-item');
+      return { first: first ? (first.dataset.page || '') : '',
+               cls: first ? first.className : '' };
+    })()`);
+    check('平台导航置于左侧菜单最上方并带 quick 样式',
+      platNav.first === 'platform' && platNav.cls.includes('wb-nav-quick'), JSON.stringify(platNav));
+    const navToggle = await evalValue(`(() => {
+      const g = document.querySelector('#wbNav .wb-nav-group');
+      const t = g.querySelector('.wb-nav-title');
+      const item = g.querySelector('.wb-nav-item');
+      const before = t.getAttribute('aria-expanded');
+      t.click();
+      const collapsed = { state: t.getAttribute('aria-expanded'),
+                          display: getComputedStyle(item).display };
+      t.click();
+      return { before: before, collapsed: collapsed,
+               restored: t.getAttribute('aria-expanded'),
+               display2: getComputedStyle(item).display };
+    })()`);
+    check('菜单分组标题点击可收起并再次展开',
+      navToggle.before === 'true' && navToggle.collapsed.state === 'false'
+      && navToggle.collapsed.display === 'none' && navToggle.restored === 'true'
+      && navToggle.display2 !== 'none', JSON.stringify(navToggle));
+    check('紫罗兰态势舱渲染三个数据面板且不照搬参考配色',
+      navInfo.cockpit === 3 && navInfo.cockpitColor === true, JSON.stringify(navInfo));
+    for (const [page, title] of [['rooms', '机房管理'], ['inspection', '主机巡检'],
+      ['monitor_center', '监控中心'], ['alert_policies', '告警策略'],
+      ['log_manage', '日志管理'], ['log_query', '日志查询'],
+      ['platform', '平台导航'], ['db_assets', '数据库资产'],
+      ['db_monitor', '监控概览'], ['alert_center', '告警中心'],
+      ['domain_alert', '域名告警']]) {
+      await evalValue(`document.querySelector('#wbNav [data-page="${page}"]').click()`);
+      await waitUntil(async () => await evalValue(`(() => {
+        const t = (document.getElementById('opsPageTitle').textContent || '').trim();
+        const b = document.getElementById('opsPageBody');
+        return t === '${title}' && !document.getElementById('wbPageGeneric').classList.contains('hidden')
+          && (b.querySelector('table') || b.querySelector('.ops-settings') ||
+              b.querySelector('.plat-grid') || b.querySelector('.odb-kpis'));
+      })()`), 12000, title + ' 页面渲染');
+      check('功能页「' + title + '」可打开并渲染真实数据表格', true);
+    }
+    await evalValue(`document.querySelector('#wbNav [data-page="platform"]').click()`);
+    await waitUntil(async () => await evalValue(`
+      document.querySelectorAll('#opsPageBody .plat-tile b').length >= 6`),
+      12000, '平台导航入口渲染');
+    const platTiles = await evalValue(`
+      Array.from(document.querySelectorAll('#opsPageBody .plat-tile b'))
+        .map(x => x.textContent.trim())`);
+    check('平台导航只保留六个入口且红色框占位项已去掉',
+      platTiles.length === 6 && !['配置中心', '服务作业', 'AIOps 运维',
+        '工单中心', '费用中心', '审计中心'].some(x => platTiles.includes(x))
+      && ['资产管理', '容器管理', 'DB 数据库', '日志中心', '告警中心', '系统管理']
+        .every(x => platTiles.includes(x)), JSON.stringify(platTiles));
+
+    await evalValue(`document.querySelector('#wbNav [data-page="dashboard"]').click()`);
+    await waitUntil(async () =>
+      (await evalValue(`!document.getElementById('wbPageDashboard').classList.contains('hidden')`)),
+      12000, '返回仪表盘');
 
     await maskHostAddresses();
     const wbPng = path.join(ASSETS, 'workbench-preview.png');

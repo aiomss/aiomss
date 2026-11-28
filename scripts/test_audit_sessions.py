@@ -42,7 +42,7 @@ def feed(sid, text, raw=None):
 
 
 ctx = {"user": "admin", "ip": "127.0.0.1", "host": "阿里云主机",
-       "target": "root@203.0.113.20:2222", "sid": "s1"}
+       "target": "root@8.134.218.149:64922", "sid": "s1"}
 ctx_win = dict(ctx, cols=80, rows=8)
 
 # ---- 连接瞬间（open_session 之前）就到达的数据不能被丢掉 ----
@@ -194,10 +194,10 @@ check("非审计问题不注入上下文（零 token 开销）",
 
 # ---- 前端本地提示也归入同一个窗口 ----
 p6 = audit.open_session("s6", dict(ctx, cols=80, rows=8))
-audit.write_notice("s6", "正在连接 root@203.0.113.20:2222 ...", ctx)
+audit.write_notice("s6", "正在连接 root@8.134.218.149:64922 ...", ctx)
 audit.close_session("s6", "正常断开")
 check("前端本地提示写进终端实录",
-      "正在连接 root@203.0.113.20:2222" in
+      "正在连接 root@8.134.218.149:64922" in
       "\n".join(audit.read_transcript(p6)))
 
 # ---- 进程重启：孤儿会话自动补「异常终止」 ----

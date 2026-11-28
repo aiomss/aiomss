@@ -6,6 +6,7 @@
           → L5 test_static.py → L6 test_ui.mjs → L7 终端转录 → L8 会话审计
           → L9 运维工作台口径 / 插件 / 只读边界
           → L10 交互式服务控制台（命令解析 / 服务状态机）
+          → L11 资产 / 监控告警 / 日志中心（真实数据来源校验）
 所有数字均来自子进程真实 stdout，不写死任何占位数字。
 
 注意：selftest.py 由后端工程师并行修复，本脚本不修改它；若首次运行失败，
@@ -41,6 +42,8 @@ LAYERS = [
      "python scripts/test_workbench.py"),
     ("L10", "交互式服务控制台单测", "scripts/test_console.py",
      "python scripts/test_console.py"),
+    ("L11", "资产 / 监控告警 / 日志中心单测", "scripts/test_ops_center.py",
+     "python scripts/test_ops_center.py"),
 ]
 
 # 6 个截图问题 → 各层用例名关键字（用于从真实输出中定位证据行）
@@ -219,6 +222,10 @@ def main():
     results["L10"] = r10
     print("[L10] test_console.py         %d 通过 / %d 失败  (%.2fs, exit=%d)" %
           (r10["pass"], r10["fail"], r10["secs"], r10["code"]))
+    r11 = do_run("L11", [PY, "scripts/test_ops_center.py"])
+    results["L11"] = r11
+    print("[L11] test_ops_center.py      %d 通过 / %d 失败  (%.2fs, exit=%d)" %
+          (r11["pass"], r11["fail"], r11["secs"], r11["code"]))
 
     # selftest 并行修复中：失败则在最后重跑一次并如实记录
     rerun = None

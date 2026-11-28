@@ -117,12 +117,20 @@ def public_state():
             "app_level": h.get("app_level", ""),
             "org": h.get("org", ""),
             "maintenance": h.get("maintenance", ""),
+            "vendor": h.get("vendor", ""),
+            "usage": h.get("usage", ""),
+            "asset_age": h.get("asset_age", ""),
         })
     return {
         "server": d.get("server", DEFAULT["server"]),
         "ai_profiles": profiles,
         "hosts": hosts,
     }
+
+
+def state():
+    """public_state 的别名：下游按 state() 取脱敏后的配置快照。"""
+    return public_state()
 
 
 def get_profile(profile_id=None):
@@ -167,6 +175,9 @@ def upsert_host(payload):
         "app_level": str(payload.get("app_level") or "")[:100],
         "org": str(payload.get("org") or "")[:100],
         "maintenance": str(payload.get("maintenance") or "")[:20],
+        "vendor": str(payload.get("vendor") or "")[:100],
+        "usage": str(payload.get("usage") or "")[:100],
+        "asset_age": str(payload.get("asset_age") or "")[:50],
     }
     if payload.get("password"):
         item["password_enc"] = encrypt(payload["password"])
@@ -253,5 +264,8 @@ def set_workbench(payload):
                 cur = wb.setdefault(kind, {})
                 cur.update({k: v for k, v in payload[kind].items()
                             if k in ("name", "url", "token", "note")})
+        # 告警策略由用户在「告警策略 / 告警通知」页面录入，不含任何口令
+        if isinstance(payload.get("alert_config"), dict):
+            wb["alert_config"] = payload["alert_config"]
         save()
     return workbench_config()

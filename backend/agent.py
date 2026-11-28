@@ -56,6 +56,16 @@ AUDIT_RULE = """
 未出现在文档里的信息一律写「审计文档中未找到」，严禁编造。
 """
 
+# 非主机目标（数据库 / 应用 / 日志）只用真实数据做证据分析，不执行任何远程命令。
+DATA_RULE = """
+
+【目标数据分析专用规则（本次生效）】
+下方【分析目标数据】由本系统从纳管主机真实采集快照或用户录入台账生成，是本次回答的唯一事实依据。
+你必须：command 填空字符串、done=true、直接给出中文完整结论，**不执行任何 SSH 命令**；
+按【现象/现状】【证据】【风险】【建议】【验证方法】分段，每条单独一行；
+证据里没有的数字、主机、日志、配置项一律写「数据中未提供」，严禁臆测或把示例当事实。
+"""
+
 # 审批等待表
 _pending = {}
 _pending_lock = threading.RLock()
@@ -162,20 +172,24 @@ def _final_summary(ai, summary, thought="", raw=""):
 
 
 def run(host_id, prompt, profile_id=None, model=None, read_only=True,
-        auto_approve=False, max_retry=60, user="unknown", ip="-", audit_context=""):
+        auto_approve=False, max_retry=60, user="unknown", ip="-", audit_context="",
+        target_context="", target_label=""):
     """SSE 事件生成器。
 
-    audit_context 非空时表示这是本地审计问答：注入文档摘录、免主机校验、不跑远程命令。
+    audit_context 非空：本地审计问答；target_context 非空：数据库/应用/日志等
+    非主机目标的事实分析。两者都注入真实数据、免主机校验、不跑远程命令。
     """
     run_id = uuid.uuid4().hex[:10]
     _stop_flags[run_id] = False
+    evidence = audit_context or target_context
     host = store.get_host(host_id)
     profile = store.get_profile(profile_id)
     steps_total = int(max_retry)
+    target_name = target_label or (("本地审计文档" if audit_context else "") or
+                                   ((host or {}).get("name", host_id)))
 
     yield {"type": "start", "run_id": run_id, "mode": "diagnose",
-           "host": ((host or {}).get("name", host_id) if not audit_context
-                    else "本地审计文档"),
+           "host": target_name,
            "model": model or (profile or {}).get("default_model", ""),
            "prompt": prompt, "read_only": read_only,
            "auto_approve": auto_approve, "max_retry": steps_total}
@@ -186,26 +200,32 @@ def run(host_id, prompt, profile_id=None, model=None, read_only=True,
         yield {"type": "progress", "text": "已结束", "state": "finished"}
         yield {"type": "done", "text": ""}
         return
-    if not host and not audit_context:
-        yield _notice("error", "无法开始诊断", "目标主机不存在或已被删除。",
-                      "请在左侧「+ 添加」重新添加一台 Linux 主机。")
+    if not host and not evidence:
+        yield _notice("error", "无法开始诊断", "分析目标不存在或已被删除。",
+                      "请重新选择纳管主机或已录入的数据库 / 应用 / 日志目标。")
         yield {"type": "progress", "text": "已结束", "state": "finished"}
         yield {"type": "done", "text": ""}
         return
 
     ai = AIClient(profile, model=model)
-    sys_prompt = SYSTEM_PROMPT + (AUDIT_RULE if audit_context else "")
-    if audit_context:
-        # 本地审计查询不需要连主机，直接把文档摘录作为事实依据交给模型
+    sys_prompt = SYSTEM_PROMPT + (AUDIT_RULE if audit_context
+                                  else (DATA_RULE if target_context else ""))
+    if evidence:
+        # 审计文档 / 非主机目标：事实已随请求给出，不连主机、不跑远程命令
+        if audit_context:
+            fact_text = audit_context
+            instruction = "请按审计规则直接给出结论（command 为空、done=true）。"
+        else:
+            fact_text = target_context
+            instruction = "请严格基于【分析目标数据】给出结论（command 为空、done=true）。"
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content":
-                "用户要求：%s\n\n%s\n\n请按审计规则直接给出结论（command 为空、done=true）。"
-                % (prompt, audit_context)},
+                "分析目标：%s\n用户要求：%s\n\n%s\n\n%s"
+                % (target_name, prompt, fact_text, instruction)},
         ]
-        hname = host.get("name", "") if host else "本地审计文档"
-        htarget = ("%s@%s:%s" % (host.get("username", ""), host.get("host", ""),
-                                 host.get("port", 22))) if host else "-"
+        hname = target_name
+        htarget = "-"
     else:
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -243,7 +263,7 @@ def run(host_id, prompt, profile_id=None, model=None, read_only=True,
             text = humanize_raw(raw)
             yield _notice("warn", "AI 回复格式不标准",
                           "本轮回复没能按约定的结构化格式返回，系统已按纯文本呈现，未执行任何命令。",
-                          "通常是模型偶发输出异常，直接点「开始诊断」重试即可。")
+                          "通常是模型偶发输出异常，直接点「开始执行」重试即可。")
             if text:
                 yield {"type": "summary", "title": "AI 原始答复（未解析为可执行步骤）",
                        "text": text, "tone": "warn"}
@@ -255,12 +275,15 @@ def run(host_id, prompt, profile_id=None, model=None, read_only=True,
         done = bool(parsed.get("done"))
         summary = (parsed.get("summary") or "").strip()
 
-        # 审计查询绝不允许落到远程命令：模型偶尔不听话时，拦下并让它直接总结
-        if audit_context and cmd:
-            messages.append({"role": "user", "content":
-                "本次是本地审计查询，禁止执行任何远程命令。请立即基于【本地审计文档】给出完整结论："
-                "command 填空字符串、done=true、summary 按【总览】【明细】【风险】【建议】分段，"
-                "逐条写清时间、用户、主机、操作。"})
+        # 审计 / 非主机目标不允许落到远程命令：模型偶尔不听话时，拦下并让它直接总结
+        if evidence and cmd:
+            rule = ("本次是本地审计查询，禁止执行任何远程命令。请立即基于【本地审计文档】给出完整结论："
+                    "command 填空字符串、done=true、summary 按【总览】【明细】【风险】【建议】分段，"
+                    "逐条写清时间、用户、主机、操作。") if audit_context else (
+                    "本次只分析已给出的【分析目标数据】，禁止执行任何远程命令。请立即基于这些真实数据"
+                    "给出完整结论：command 填空字符串、done=true，按【现象/现状】【证据】【风险】"
+                    "【建议】【验证方法】分段，数据里没有的写「数据中未提供」。")
+            messages.append({"role": "user", "content": rule})
             continue
 
         if reasoning:
@@ -393,8 +416,9 @@ def run(host_id, prompt, profile_id=None, model=None, read_only=True,
     yield {"type": "done", "text": ""}
 
 
-def ask(prompt, profile_id=None, model=None, audit_context=""):
-    """纯问答（不连主机）：审计类问题自动带上本地会话窗口文档的摘录作为事实依据。"""
+def ask(prompt, profile_id=None, model=None, audit_context="",
+        target_context="", target_label=""):
+    """纯问答（不连主机）：审计摘录 / 非主机目标的真实数据作为事实依据。"""
     yield {"type": "start", "mode": "ask", "text": "AI 正在思考…"}
     profile = store.get_profile(profile_id)
     if not profile or not profile.get("api_key"):
@@ -413,6 +437,13 @@ def ask(prompt, profile_id=None, model=None, audit_context=""):
                "文档里没有的人或事必须写「审计文档中未找到」，严禁编造、推测或把示例当事实；"
                "可以统计次数、归纳风险并给出可执行建议。不要输出 Markdown 代码围栏，"
                "不要半句话结束。\n\n" + audit_context + "\n\n用户问题：")
+    elif target_context:
+        sys = ("你是运维数据分析助手。下面的【分析目标数据】由纳管主机真实采集或用户录入生成，"
+               "是本次回答的**唯一事实依据**。\n"
+               "分析目标：%s\n用中文按【现象/现状】【证据】【风险】【建议】【验证方法】分段，"
+               "每条内容单独一行；数字、主机、配置、日志必须逐字引用数据，没有的写「数据中未提供」，"
+               "严禁编造、推测或把示例当事实。不要输出 Markdown 代码围栏，不要半句话结束。"
+               "\n\n%s\n\n用户问题：" % (target_label or "分析目标", target_context))
     else:
         sys = ("你是资深 Linux 运维专家。用中文回答，结构清晰：作用 → 关键参数（带示例）→ 常用组合 → "
                "注意事项。涉及危险参数（rm -rf、chmod 777、> 覆盖、kill -9、dd）须明确警示。"

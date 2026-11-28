@@ -129,7 +129,7 @@ echo   The console needs a local Python to build its virtual environment.
 echo   Install Python 3.9 or newer from python.org. Check Add to PATH. Then retry.
 echo   Or run once manually from the project root:
 echo.
-echo     "C:\Path\To\Python313\python.exe" -m venv .venv
+echo     "C:\Users\18202\AppData\Local\Programs\Python\Python313\python.exe" -m venv .venv
 echo     .venv\Scripts\python.exe -m pip install -r requirements.txt
 echo.
 echo %DATE% %TIME% NO_PYTHON >> "%LOG%" 2>nul

@@ -14,7 +14,7 @@ const TermCtor = window.Terminal || (window.xterm && window.xterm.Terminal);
 const FitCtor = window.FitAddon && (window.FitAddon.FitAddon || window.FitAddon);
 
 const S = {
-  hosts: [], profiles: [], server: { port: 8848 }, activeHost: '',
+  hosts: [], profiles: [], server: { port: 8848 }, activeHost: '', aiTargets: null,
   sessions: {},                 // hostId -> {term, fit, sid, es, wrap, alive, buf, timer}
   runId: '', running: false, mode: 'diagnose', steps: {},
   controller: null, reasoningCount: 0, reasoningChars: 0, maxRetry: 8,
@@ -230,6 +230,92 @@ function clearWaiting() {
     .forEach(x => x.classList.remove('waiting'));
 }
 
+/* ---------------- 主机下拉：地域分组 + 输入筛选 ---------------- */
+function hostMatches(h, kw) {
+  if (!kw) return true;
+  const hay = [h.name, h.host, h.username, h.region, h.biz_line, h.room]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.indexOf(kw) >= 0;
+}
+function fillHostSelect(select, hosts, kw, optText) {
+  if (!select) return;
+  const anchor = select.dataset.anchor || select.value;
+  if (!select.dataset.anchor) select.dataset.anchor = anchor;
+  const keep = select.dataset.keep || anchor;
+  select.innerHTML = '';
+  const groups = {};
+  hosts.filter(h => hostMatches(h, kw)).forEach(h => {
+    const region = h.region || '未分配地域';
+    (groups[region] = groups[region] || []).push(h);
+  });
+  const names = Object.keys(groups);
+  if (!names.length) {
+    const o = el('option', '', hosts.length ? '没有匹配的主机（请清空搜索词）' : '尚未纳管主机');
+    o.value = ''; o.disabled = true; select.appendChild(o); select.value = '';
+    return;
+  }
+  names.forEach(name => {
+    const g = el('optgroup'); g.label = name;
+    groups[name].forEach(h => {
+      const o = el('option', '', optText(h)); o.value = h.id; g.appendChild(o);
+    });
+    select.appendChild(g);
+  });
+  const all = Array.from(select.options);
+  select.value = all.some(o => o.value === keep) ? keep : (all[0] ? all[0].value : '');
+  delete select.dataset.keep;
+}
+function renderTermHostOptions() {
+  const search = $('termHostSearch');
+  const kw = (search && search.value || '').trim().toLowerCase();
+  const sel = $('termHostSelect');
+  fillHostSelect(sel, S.hosts, kw,
+    h => h.name + ' (' + h.username + '@' + h.host + ')');
+  const btn = $('btnTermConnect');
+  if (btn && sel) {
+    const live = !!(S.sessions[sel.value] && S.sessions[sel.value].alive);
+    btn.textContent = live ? '断开' : '连接';
+    btn.title = live ? '断开所选主机的 SSH 会话' : '连接所选主机的 SSH 终端';
+  }
+}
+if ($('termHostSearch')) $('termHostSearch').oninput = renderTermHostOptions;
+
+/* ---------------- AI 分析目标：主机 / 数据库 / 应用 / 日志 ---------------- */
+async function loadAiTargets() {
+  try {
+    S.aiTargets = await api('/api/agent/targets');
+  } catch (e) {
+    S.aiTargets = { ok: false, groups: [] };
+  }
+  renderAiTargetOptions();
+}
+function renderAiTargetOptions() {
+  const sel = $('selHost'), typeSel = $('aiTargetType');
+  if (!sel || !typeSel) return;
+  const type = typeSel.value || 'host';
+  const group = ((S.aiTargets && S.aiTargets.groups) || [])
+    .find(g => g.type === type) || { options: [] };
+  if (!sel.dataset.keep) sel.dataset.keep = sel.value;
+  const keep = sel.dataset.keep;
+  sel.innerHTML = '';
+  if (type === 'host') {
+    fillHostSelect(sel, S.hosts, '', h => h.name + ' (' + h.username + ')');
+    delete sel.dataset.keep;
+  } else if (!group.options.length) {
+    const labels = { database: '数据库', application: '应用', log: '日志源' };
+    const o = el('option', '', '暂无' + (labels[type] || '目标') + '（请先在对应页面录入）');
+    o.value = ''; o.disabled = true; sel.appendChild(o); sel.value = '';
+  } else {
+    group.options.forEach(x => {
+      const o = el('option', '', x.name + (x.detail ? ' · ' + x.detail : ''));
+      o.value = x.id; sel.appendChild(o);
+    });
+    sel.value = group.options.some(x => String(x.id) === keep) ? keep : group.options[0].id;
+    delete sel.dataset.keep;
+  }
+}
+if ($('aiTargetType')) $('aiTargetType').onchange = renderAiTargetOptions;
+
 /* ---------------- 加载与渲染 ---------------- */
 async function loadState(keepSelect = true) {
   const st = await api('/api/state');
@@ -249,13 +335,14 @@ async function loadState(keepSelect = true) {
     tabs.appendChild(t);
   });
 
-  const list = $('hostList'); list.innerHTML = '';
-  if (!S.hosts.length) {
+  const list = $('hostList');
+  if (list) list.innerHTML = '';
+  if (list && !S.hosts.length) {
     const d = el('div', 'quick-item', '暂无主机，点「+ 添加」连接 Linux');
     d.onclick = () => openModal('modalHost');
     list.appendChild(d);
   }
-  S.hosts.forEach(h => {
+  (list ? S.hosts : []).forEach(h => {
     const sess = S.sessions[h.id];
     const live = !!(sess && sess.alive);
     const item = el('div', 'host-item' + (h.id === S.activeHost ? ' active' : '') +
@@ -301,15 +388,20 @@ async function loadState(keepSelect = true) {
     list.appendChild(item);
   });
 
-  const selHost = $('selHost');
-  const prevHost = selHost.value;
-  selHost.innerHTML = '';
-  S.hosts.forEach(h => {
-    const o = el('option', '', h.name + ' (' + h.username + ')');
-    o.value = h.id; selHost.appendChild(o);
-  });
-  if (keepSelect && S.hosts.some(h => h.id === prevHost)) selHost.value = prevHost;
-  else if (S.activeHost) selHost.value = S.activeHost;
+  // 终端顶部主机选择器：按地域分组，支持搜索框过滤
+  renderTermHostOptions();
+  if (S.activeHost && $('termHostSelect')) {
+    $('termHostSelect').value = S.activeHost;
+    $('termHostSelect').dataset.anchor = S.activeHost;
+  }
+
+  // AI 目标下拉：类型决定候选项；主机走原有诊断，其他类型用真实数据作答
+  renderAiTargetOptions();
+  if ($('aiTargetType') && $('aiTargetType').value === 'host' && S.activeHost
+      && (!keepSelect || !$('selHost').value)) {
+    $('selHost').value = S.activeHost;
+    $('selHost').dataset.anchor = S.activeHost;
+  }
 
   const selP = $('selProfile');
   const prevP = selP.value;
@@ -366,7 +458,7 @@ function showEmptyTerm(msg) {
   d.style.display = '';
   d.appendChild(el('div', 'te-ico', '⌘'));
   d.appendChild(el('div', 'te-title', '还没有连接任何主机'));
-  d.appendChild(el('div', 'te-text', msg || '在左侧主机列表点「连接」才会建立 SSH 会话；登录不会自动连接。'));
+  d.appendChild(el('div', 'te-text', msg || '在终端上方选择主机并点「连接」才会建立 SSH 会话；登录不会自动连接。'));
   const b = el('button', 'btn primary', '+ 添加 Linux 主机');
   b.onclick = () => openModal('modalHost');
   d.appendChild(b);
@@ -468,12 +560,17 @@ function closeSession(hostId) {
 async function selectHost(hostId) {
   // 只切换「目标主机」，绝不自动建立 SSH 连接
   S.activeHost = hostId;
+  if ($('aiTargetType') && $('aiTargetType').value !== 'host') {
+    $('aiTargetType').value = 'host';
+    renderAiTargetOptions();
+  }
   await loadState();
   $('selHost').value = hostId;
+  $('selHost').dataset.anchor = hostId;
   const s = S.sessions[hostId];
   if (s && s.alive) { showSession(hostId); return; }
   const h = S.hosts.find(x => x.id === hostId);
-  showEmptyTerm('已选中「' + (h ? h.name : hostId) + '」。点击左侧该主机的「连接」按钮才会建立 SSH 会话。');
+  showEmptyTerm('已选中「' + (h ? h.name : hostId) + '」。点击终端上方的「连接」按钮才会建立 SSH 会话。');
   setBadge('未连接', false);
 }
 
@@ -481,7 +578,7 @@ async function disconnectHost(hostId) {
   destroySession(hostId);
   await loadState();
   if (S.activeHost === hostId) {
-    showEmptyTerm('已断开。需要时点击左侧该主机的「连接」按钮重新连接。');
+    showEmptyTerm('已断开。需要时点击终端上方的「连接」按钮重新连接。');
     setBadge('未连接', false);
   } else {
     const s = S.sessions[S.activeHost];
@@ -579,7 +676,7 @@ $('btnClearTerm').onclick = () => {
 };
 $('btnReconnect').onclick = () => {
   if (!S.activeHost) return;
-  if (!S.sessions[S.activeHost]) { setRunStatus('请先点击左侧该主机的「连接」按钮。'); return; }
+  if (!S.sessions[S.activeHost]) { setRunStatus('请先点击终端上方的「连接」按钮。'); return; }
   openTerminal(S.activeHost);
 };
 $('btnFullTerm').onclick = () => {
@@ -607,7 +704,7 @@ function setMode(m) {
   S.mode = m;
   document.querySelectorAll('.mode-tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === m));
-  $('btnRun').textContent = m === 'ask' ? '▶ 开始提问' : '▶ 开始诊断';
+  $('btnRun').textContent = m === 'ask' ? '▶ 开始提问' : '▶ 开始执行';
   $('promptInput').placeholder = m === 'ask'
     ? '直接问 Linux 命令用法，例如：vim 的 -R / +N / -d 参数分别是什么意思？'
     : '写清要求，例如：/ 分区使用率 100%，先定位是哪个目录占用，再给出清理方案并处理（保留最近 7 天日志）';
@@ -639,8 +736,9 @@ window.addEventListener('keydown', (e) => {
       !document.querySelector('.modal:not(.hidden)')) closeAiDrawer();
 });
 
-/* ---------------- 左侧主机列表：折叠 / 展开 ---------------- */
+/* ---------------- 兼容旧版左侧主机列表：元素已移除，存在时才绑定 ---------------- */
 (function () {
+  if (!$('btnSideToggle')) return;
   const KEY = 'aoc_side_collapsed';
   function apply(collapsed) {
     document.body.classList.toggle('side-collapsed', collapsed);
@@ -1071,13 +1169,17 @@ $('btnRun').onclick = async () => {
   }
   const prompt = $('promptInput').value.trim();
   if (!prompt) { alert('请先写清要求'); return; }
+  const targetType = ($('aiTargetType') && $('aiTargetType').value) || 'host';
+  const targetId = $('selHost').value;
   const body = {
-    prompt, host_id: $('selHost').value,
+    prompt, target_type: targetType, target_id: targetId,
+    host_id: targetType === 'host' ? targetId : '',
     profile_id: $('selProfile').value, model: $('selModel').value,
     read_only: $('chkReadOnly').checked, auto_approve: $('chkAuto').checked,
     max_retry: 60,
   };
-  if (S.mode === 'diagnose' && !body.host_id) { alert('请先在左侧添加并选中一台 Linux 主机'); return; }
+  if (targetType === 'host' && !targetId) { alert('请先在工作台「主机管理」添加并选择一台 Linux 主机'); return; }
+  if (targetType !== 'host' && !targetId) { alert('请先在对应页面录入并选择分析目标'); return; }
   clearSteps();
   S.maxRetry = body.max_retry;
   S.running = true;
@@ -1138,6 +1240,8 @@ $('btnClear').onclick = async () => {
   }
   hideConfirmDock();
   clearSteps();
+  // 清空 / 重置同时清空输入框，避免上一轮要求残留在下一次执行里
+  if ($('promptInput')) $('promptInput').value = '';
   setRunStatus('已重置，可以重新开始。');
 };
 
@@ -1180,7 +1284,7 @@ document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => closeMo
 document.querySelectorAll('.modal').forEach(m => m.onclick = (e) => {
   if (e.target === m) m.classList.add('hidden');
 });
-$('btnAddHost').onclick = () => {
+function openNewHost() {
   EDITING_HOST_ID = '';
   $('modalHost').querySelector('.modal-head b').textContent = '添加 Linux 主机';
   $('hName').value = ''; $('hHost').value = ''; $('hPort').value = '22';
@@ -1258,8 +1362,9 @@ $('btnSaveHost').onclick = async () => {
     S.activeHost = r.id;
     await loadState();
     await selectHost(r.id);
-    // 主机参数改动（地域/机房/维保等）立即反映到工作台的资产质量与地域维度
-    if (typeof wbLoad === 'function' && !$('workbenchView').classList.contains('hidden')) {
+    // 主机参数改动立即同步到工作台全部面板（含主机管理页与仪表盘）
+    if (window.OpsExt && OpsExt.afterHostSaved) await OpsExt.afterHostSaved();
+    else if (typeof wbLoad === 'function' && !$('workbenchView').classList.contains('hidden')) {
       await wbLoad();
     }
     setRunStatus('主机已保存。资产维度已同步；监控指标需重新点「采集监控数据」才会更新。');
@@ -1569,7 +1674,7 @@ function fmUpload(file) {
 
 function openFileManager(mode) {
   const h = fmHost();
-  if (!h) { alert('请先在左侧主机列表点「连接」，再使用文件传输。'); return; }
+  if (!h) { alert('请先在工作台主机管理或终端工具条连接主机，再使用文件传输。'); return; }
   FM.mode = mode;
   FM.filter = ''; $('fileSearch').value = '';
   $('fileModalTitle').textContent = mode === 'download' ? '文件下载 · 点击文件即下载' : '文件上传 · 进入目标目录后选择本机文件';
@@ -1846,6 +1951,7 @@ function setView(v, doLog) {
   try { localStorage.setItem('aoc_view_v1', v); } catch (e) { /* ignore */ }
   if (wb) {
     wbLoad();
+    if (window.OpsExt && OpsExt.renderDashboard) OpsExt.renderDashboard();
     if (doLog !== false) wbLog('打开运维工作台总览');
   } else {
     fitTermSoon(120);                 // 终端从隐藏恢复后重新计算列数
@@ -1853,18 +1959,67 @@ function setView(v, doLog) {
 }
 $('btnViewTerminal').onclick = () => setView('terminal');
 $('btnViewWorkbench').onclick = () => setView('workbench');
+
+/* ---------- 主机统一由工作台管理：终端只提供选择 / 连接 ---------- */
+if ($('termHostSelect')) {
+  $('termHostSelect').onchange = () => {
+    const id = $('termHostSelect').value;
+    if (id) { S.activeHost = id; selectHost(id); loadState(); }
+  };
+  $('btnTermConnect').onclick = async () => {
+    const id = $('termHostSelect').value;
+    if (!id) { setRunStatus('请先在工作台「主机管理」添加主机。'); return; }
+    const live = !!(S.sessions[id] && S.sessions[id].alive);
+    if (live) await disconnectHost(id);
+    else { S.activeHost = id; await selectHost(id); await openTerminal(id); }
+    await loadState();
+  };
+  $('btnTermManage').onclick = () => {
+    setView('workbench'); wbSelectPage('hosts');
+  };
+}
+
+/* ---------- 全局刷新：主机 / 资产 / 监控 / 告警 / 日志 / 当前页 ---------- */
+async function globalRefresh(source) {
+  const btn = $('btnGlobalRefresh');
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ 刷新中…'; }
+  const msg = $('wbCollectMsg');
+  if (msg) msg.textContent = '正在同步全部数据源：主机清单、采集快照、告警、资产、日志与当前页面…';
+  try {
+    await loadState(false);
+    await loadAiTargets();
+    if (window.OpsExt && OpsExt.refreshAll) await OpsExt.refreshAll();
+    else await wbLoad();
+    const at = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    if (msg) msg.textContent = '✅ 全局刷新完成（' + at + '）：所有面板已重读本地真实数据；'
+      + 'CPU / 内存等监控值如需变化，请先从主机重新采集。';
+    setRunStatus('全局数据已刷新（' + (source || '手动') + '）。');
+    wbLog('全局刷新全部数据');
+  } catch (e) {
+    if (msg) msg.textContent = '❌ 全局刷新失败：' + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
+}
+if ($('btnGlobalRefresh')) $('btnGlobalRefresh').onclick = () => globalRefresh('顶栏');
+// 大屏按钮在 ops_ext.js 加载后绑定（该脚本位于 app.js 之后）
+
 $('wbRefresh').onclick = async () => {
   const btn = $('wbRefresh'), msg = $('wbCollectMsg'), old = btn.textContent;
   btn.disabled = true; btn.textContent = '⟳ 刷新中…';
-  msg.textContent = '正在重新读取本地快照与纳管主机配置…';
+  msg.textContent = '正在同步全部数据源：主机清单、采集快照、告警、资产、日志与当前页面…';
   const start = Date.now();
   try {
-    await wbLoad();
+    await loadState(false);
+    await loadAiTargets();
+    if (window.OpsExt && OpsExt.refreshAll) await OpsExt.refreshAll();
+    else await wbLoad();
     const cost = ((Date.now() - start) / 1000).toFixed(1);
     msg.textContent = '✅ 已刷新（耗时 ' + cost + 's）· ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) +
-      '。仅重读本地数据；要更新 CPU / 内存等监控指标请点「采集监控数据」。';
-    wbLog('刷新运维工作台数据');
-    setRunStatus('工作台数据已刷新。');
+      '。全部面板已重读本地真实数据；要更新 CPU / 内存等监控值请先「采集监控数据」。';
+    wbLog('刷新运维工作台全部数据');
+    setRunStatus('工作台全部数据已刷新。');
   } catch (e) {
     msg.textContent = '❌ 刷新失败：' + e.message;
   } finally {
@@ -1909,7 +2064,7 @@ function wbWindowParams() {
 async function wbLoad() {
   try {
     const wq = wbWindowQuery();
-    const [ov, rg, qu, al, mt, as, pl, sr] = await Promise.all([
+    const [ov, rg, qu, al, mt, as, pl, sr, dash] = await Promise.all([
       api('/api/workbench/overview?' + wq),
       api('/api/workbench/regions?' + wq),
       api('/api/workbench/quality?dimension=&page=1&size=1'),
@@ -1918,11 +2073,12 @@ async function wbLoad() {
       api('/api/workbench/assets'),
       api('/api/workbench/plugins'),
       api('/api/workbench/sources'),
+      api('/api/ops/dashboard?' + wq),
     ]);
-    WB.data = { ov, rg, qu, al, mt, as, pl, sr };
+    WB.data = { ov, rg, qu, al, mt, as, pl, sr, dash };
     wbRenderKpis(ov); wbRenderRegions(rg); wbRenderQuality(qu);
     wbRenderAssets(as); wbRenderMetrics(mt); wbRenderAlerts(al);
-    wbRenderPlugins(pl); wbRenderSources(sr);
+    wbRenderSources(sr); wbRenderCockpit(dash);
     $('wbSourceTag').textContent = '数据源：已纳管 ' + ov.managed + ' 台 · 有监控快照 ' +
       ov.monitored + ' 台 · 更新于 ' + ov.generated_at;
     $('wbSourceTag').title = ov.note || '';
@@ -1930,6 +2086,688 @@ async function wbLoad() {
     $('wbKpis').innerHTML = '';
     $('wbKpis').appendChild(el('div', 'wb-note', '工作台数据读取失败：' + e.message));
   }
+}
+
+/* ============================================================
+   资产管理 / 监控告警 / 日志中心：左侧功能导航
+   所有页面只渲染纳管主机采集结果与用户显式录入的数据
+   ============================================================ */
+const OPS_PAGES = {
+  dashboard: { title: '仪表盘', tip: '总览来自已纳管主机与采集快照；未采集一律为 0，不用示例数字。' },
+  rooms: { title: '机房管理', tip: '机房名取纳管主机已填写的机房字段，未填写单独归集。' },
+  hosts: { title: '主机管理', tip: '纳管主机在这里新增、编辑、删除、导入、导出；指标只来自主机采集。' },
+  network_device: { title: '网络设备', tip: '用户录入的网络设备台账，默认空。', category: 'network_device' },
+  credential: { title: '凭据管理', tip: '只登记凭据台账，不接收口令、Token 或密钥本体。', category: 'credential' },
+  probe: { title: '探针管理', tip: '用户录入的探针台账，默认空。', category: 'probe' },
+  inspection: { title: '主机巡检', tip: '只对已有采集快照的纳管主机做阈值比对，未采集不算健康。' },
+  database: { title: '数据库资产', tip: '用户录入的数据库台账，默认空。', category: 'database' },
+  db_assets: { title: '数据库资产', tip: '用户录入数据库资产并关联纳管主机；指标由该主机真实采集得出。' },
+  db_query: { title: 'SQL 查询', tip: '记录用户输入的查询与结果，系统不伪造执行结果。' },
+  db_audit: { title: 'SQL 审核', tip: '记录用户提交的 SQL 工单与审核结论，全部来自用户输入。' },
+  db_monitor: { title: '监控概览', tip: '只展示数据库资产所关联纳管主机的真实采集指标。' },
+  db_slow: { title: '慢日志分析', tip: '记录用户录入的慢日志样本；未录入为空态。' },
+  db_assistant: { title: '数据库助手', tip: '基于本机真实采集指标与用户记录给出只读分析，不代替人工判断。' },
+  platform: { title: '平台导航', tip: '各功能域入口；资产、数据库、日志、告警为已接入模块。' },
+  middleware: { title: '应用/中间件管理', tip: '用户录入的应用与中间件台账，默认空；AI 助手的「应用」目标从这里读取。', category: 'middleware' },
+  monitor_center: { title: '监控中心', tip: '实时指标来自纳管主机只读采集；GPU 为有 nvidia-smi 时的真实读数。' },
+  alert_center: { title: '告警中心', tip: '告警由真实采集指标按用户阈值判定，统计不写入任何演示数据。' },
+  domain_alert: { title: '域名告警', tip: '域名由用户录入；检测在指定纳管主机上执行只读 curl / openssl。' },
+  alert_source: { title: '告警数据源', tip: '用户录入的只读数据源台账，默认空。', category: 'alert_source' },
+  alert_events: { title: '告警事件', tip: '告警事件由采集指标按阈值判定，级别不交给模型。' },
+  alert_policies: { title: '告警策略', tip: 'CPU / 内存 / 磁盘 / 网络阈值由用户设置，立即参与后续判定。' },
+  alert_templates: { title: '告警模板', tip: '模板只影响告警消息文案，不改变告警是否产生。' },
+  alert_aggregate: { title: '告警聚合', tip: '对所选时间窗内的真实告警按维度分组统计。' },
+  alert_notifications: { title: '告警通知', tip: '只登记通知对象，系统不会自动发送，也不保存口令。' },
+  alert_resources: { title: '告警资源', tip: '资源清单来自已纳管主机，未采集主机的 0 告警不代表健康。' },
+  log_manage: { title: '日志管理', tip: '日志源必须指向已纳管主机上的绝对路径，默认空。' },
+  log_query: { title: '日志查询', tip: '查询真实采集到的日志原文，可按分类、级别、关键词过滤。' },
+  log_collect: { title: '日志采集', tip: '对已配置日志源执行只读 tail，不修改远端文件。' },
+  log_alerts: { title: '日志告警', tip: '按用户在日志源中填写的关键词匹配真实采集行得出。' },
+  log_traces: { title: '日志链路', tip: '链路标识由用户配置的正则从真实日志行提取，未配置为空。' },
+  log_slow: { title: '数据慢日志', tip: '只看分类为「数据慢日志」的真实采集内容。' },
+  log_access: { title: '业务访问日志', tip: '只看分类为「业务访问日志」的真实采集内容。' },
+};
+const OPS = { page: 'dashboard', catalogMeta: null, logMeta: null, form: null };
+
+// 台账字段元数据按需加载：任何页面（包括冷启动直接进数据库资产）都能打开新增弹窗。
+async function ensureCatalogMeta() {
+  if (!OPS.catalogMeta) OPS.catalogMeta = await api('/api/ops/catalog/meta');
+  return OPS.catalogMeta;
+}
+
+function opsBtn(label, onClick, cls) {
+  const b = el('button', 'btn ' + (cls || 'tiny'), label);
+  b.onclick = onClick; return b;
+}
+function opsTable(cols, rows, emptyText) {
+  const table = el('table', 'ops-table');
+  const head = el('thead'), hr = el('tr');
+  cols.forEach(c => hr.appendChild(el('th', '', c.label)));
+  head.appendChild(hr); table.appendChild(head);
+  const tb = el('tbody');
+  (rows || []).forEach(row => {
+    const tr = el('tr');
+    cols.forEach(c => {
+      const td = el('td', c.cls || '');
+      const v = c.render ? c.render(row) : (row[c.key] === null || row[c.key] === undefined
+        || row[c.key] === '' ? '—' : row[c.key]);
+      if (v instanceof Node) td.appendChild(v); else td.textContent = String(v);
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  if (!(rows || []).length) {
+    const tr = el('tr'), td = el('td', 'wb-empty', emptyText || '暂无数据');
+    td.colSpan = Math.max(1, cols.length); tr.appendChild(td); tb.appendChild(tr);
+  }
+  table.appendChild(tb); return table;
+}
+function opsBadge(text, kind) {
+  return el('span', 'ops-badge' + (kind ? ' ' + kind : ''), text || '—');
+}
+function opsActions(edit, remove) {
+  const wrap = el('span', 'ops-row-actions');
+  if (edit) wrap.appendChild(opsBtn('编辑', edit));
+  if (remove) wrap.appendChild(opsBtn('删除', remove));
+  return wrap;
+}
+function opsSetHead(page) {
+  const p = OPS_PAGES[page] || OPS_PAGES.dashboard;
+  $('opsPageTitle').textContent = p.title;
+  $('opsPageTip').textContent = p.tip || '';
+  $('opsPageTools').innerHTML = ''; $('opsPageBody').innerHTML = '';
+  $('opsPageMsg').textContent = '';
+}
+const NAV_GROUP_KEY = 'aoc_nav_groups_v1';
+function navGroupState() {
+  try { return JSON.parse(localStorage.getItem(NAV_GROUP_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function wbExpandNavFor(page) {
+  const item = document.querySelector('#wbNav .wb-nav-item[data-page="' + page + '"]');
+  if (!item) return;
+  const group = item.closest('.wb-nav-group');
+  if (!group || !group.classList.contains('collapsed')) return;
+  group.classList.remove('collapsed');
+  const state = navGroupState();
+  delete state[group.dataset.group || ''];
+  try { localStorage.setItem(NAV_GROUP_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+}
+function bindWbNav() {
+  document.querySelectorAll('#wbNav .wb-nav-item').forEach(b => {
+    b.onclick = () => wbSelectPage(b.dataset.page);
+  });
+  const saved = navGroupState();
+  document.querySelectorAll('#wbNav .wb-nav-group').forEach((g, i) => {
+    g.dataset.group = 'g' + i;
+    const title = g.querySelector('.wb-nav-title');
+    if (!title) return;
+    const apply = () => {
+      const collapsed = !!saved[g.dataset.group];
+      g.classList.toggle('collapsed', collapsed);
+      title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    };
+    apply();
+    const toggle = () => {
+      const collapsed = !g.classList.contains('collapsed');
+      g.classList.toggle('collapsed', collapsed);
+      title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      const st = navGroupState();
+      if (collapsed) st[g.dataset.group] = true; else delete st[g.dataset.group];
+      try { localStorage.setItem(NAV_GROUP_KEY, JSON.stringify(st)); } catch (e) { /* ignore */ }
+    };
+    title.onclick = toggle;
+    title.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    };
+  });
+}
+function wbSelectPage(page) {
+  if (!OPS_PAGES[page]) page = 'dashboard';
+  OPS.page = page;
+  wbExpandNavFor(page);
+  document.querySelectorAll('#wbNav .wb-nav-item').forEach(b =>
+    b.classList.toggle('active', b.dataset.page === page));
+  $('wbPageDashboard').classList.toggle('hidden', page !== 'dashboard');
+  $('wbPageGeneric').classList.toggle('hidden', page === 'dashboard');
+  if (page === 'dashboard') {
+    wbLoad();
+    if (window.OpsExt && OpsExt.renderDashboard) OpsExt.renderDashboard();
+    return;
+  }
+  opsSetHead(page);
+  renderOpsPage(page).catch(e => { $('opsPageMsg').textContent = '读取失败：' + e.message; });
+}
+
+function wbRenderCockpit(dash) {
+  const box = $('wbCockpit'); if (!box || !dash || !dash.ok) return;
+  box.innerHTML = '';
+  const head = el('div', 'cockpit-head');
+  const h = el('h3', '', '运维态势舱');
+  head.appendChild(h);
+  head.appendChild(el('span', '', '生成于 ' + (dash.generated_at || '—') +
+    ' · 窗口 ' + (dash.window_label || '—') + ' · ' + (dash.note || '')));
+  box.appendChild(head);
+  const grid = el('div', 'cockpit-grid');
+  const kpiPanel = el('div', 'cockpit-panel');
+  kpiPanel.appendChild(el('h4', '', '纳管资产与监控覆盖'));
+  const kpis = el('div', 'cockpit-kpis');
+  [['纳管主机', dash.managed, '台', ''], ['有快照', dash.monitored, '台', 'teal'],
+   ['监控覆盖', dash.coverage, '%', 'amber'], ['活跃告警', dash.alerts, '条', 'pink']].forEach(x => {
+    const c = el('div', 'ckpi ' + x[3]);
+    c.appendChild(el('small', '', x[0]));
+    const b = el('b', '', String(x[1])); b.appendChild(el('i', '', x[2]));
+    c.appendChild(b); kpis.appendChild(c);
+  });
+  kpiPanel.appendChild(kpis); grid.appendChild(kpiPanel);
+
+  const alertPanel = el('div', 'cockpit-panel');
+  alertPanel.appendChild(el('h4', '', '实时告警 · 按资源归集'));
+  const al = el('div', 'cockpit-list');
+  (dash.alert_top || []).forEach(a => {
+    const line = el('div', 'cockpit-line');
+    line.appendChild(el('span', 'dot ' + (a.severe ? 'hi' : 'warn')));
+    line.appendChild(el('span', 'grow', a.key));
+    line.appendChild(el('b', '', a.count + ' 条'));
+    al.appendChild(line);
+  });
+  if (!(dash.alert_top || []).length) {
+    al.appendChild(el('div', 'cockpit-empty',
+      '所选时间窗内没有超阈值的采集告警；若主机有快照，可到「监控中心」查看真实采集值。'));
+  }
+  alertPanel.appendChild(al); grid.appendChild(alertPanel);
+
+  const assetPanel = el('div', 'cockpit-panel');
+  assetPanel.appendChild(el('h4', '', '地域分布 · 资产治理'));
+  const list = el('div', 'cockpit-list');
+  (dash.regions || []).forEach(r => {
+    const line = el('div', 'cockpit-line');
+    line.appendChild(el('span', 'dot'));
+    line.appendChild(el('span', 'grow', r.name + ' · ' + r.monitored + '/' + r.hosts + ' 有快照'));
+    line.appendChild(el('b', '', r.rate + '%'));
+    list.appendChild(line);
+  });
+  (dash.quality_top || []).filter(q => q.count > 0).slice(0, 3).forEach(q => {
+    const line = el('div', 'cockpit-line');
+    line.appendChild(el('span', 'dot warn'));
+    line.appendChild(el('span', 'grow', q.label));
+    line.appendChild(el('b', '', q.count + ' 项'));
+    list.appendChild(line);
+  });
+  if (!list.children.length) list.appendChild(el('div', 'cockpit-empty',
+    '尚未纳管主机，或资产字段均已填齐。'));
+  assetPanel.appendChild(list); grid.appendChild(assetPanel);
+  box.appendChild(grid);
+}
+
+async function renderOpsPage(page) {
+  if (window.OpsExt && OpsExt.OWNED_PAGES && OpsExt.OWNED_PAGES.has(page)) {
+    return OpsExt.render(page);
+  }
+  if (OPS_PAGES[page].category) return renderCatalogPage(page, OPS_PAGES[page].category);
+  switch (page) {
+    case 'rooms': return renderRoomsPage();
+    case 'hosts': return renderHostsPage();
+    case 'inspection': return renderInspectionPage();
+    case 'monitor_center': return renderMonitorPage();
+    case 'alert_events': return renderAlertEventsPage();
+    case 'alert_policies': return renderAlertPolicyPage(false);
+    case 'alert_templates': return renderAlertPolicyPage(true);
+    case 'alert_aggregate': return renderAggregatePage();
+    case 'alert_notifications': return renderNotificationsPage();
+    case 'alert_resources': return renderAlertResourcesPage();
+    case 'log_manage': return renderLogManagePage();
+    case 'log_query': return renderLogQueryPage('', true);
+    case 'log_collect': return renderLogCollectPage();
+    case 'log_alerts': return renderLogAlertsPage();
+    case 'log_traces': return renderLogTracesPage();
+    case 'log_slow': return renderLogQueryPage('slow', false);
+    case 'log_access': return renderLogQueryPage('access', false);
+    default: return;
+  }
+}
+
+/* ---------- 资产管理 ---------- */
+async function renderCatalogPage(page, category) {
+  await ensureCatalogMeta();
+  const meta = OPS.catalogMeta.categories.find(c => c.key === category) || { fields: [] };
+  if (meta.tip) $('opsPageTip').textContent = meta.tip;
+  const kw = el('input', '', ''); kw.type = 'text'; kw.placeholder = '按名称 / 地址 / 备注搜索';
+  $('opsPageTools').appendChild(kw);
+  $('opsPageTools').appendChild(opsBtn('查询', () => load()));
+  $('opsPageTools').appendChild(opsBtn('＋ 新增', () => opsOpenForm('catalog', category, null), 'primary'));
+  const cols = meta.fields.map(f => ({ key: f.key, label: f.label }));
+  cols.push({ key: '_op', label: '操作', render: row => opsActions(
+    () => opsOpenForm('catalog', category, row),
+    () => removeRecord(row, category)) });
+  async function load() {
+    const r = await api('/api/ops/catalog?category=' + category +
+      '&keyword=' + encodeURIComponent(kw.value || ''));
+    $('opsPageBody').innerHTML = '';
+    $('opsPageBody').appendChild(opsTable(cols, r.rows,
+      '暂无记录。点「＋ 新增」录入' + OPS_PAGES[page].title + '台账；数据只来自你的输入。'));
+    $('opsPageMsg').textContent = '共 ' + r.total + ' 条 · ' + r.note;
+  }
+  async function removeRecord(row) {
+    if (!confirm('确定删除「' + (row.name || row.id) + '」？')) return;
+    const r = await api('/api/ops/catalog/' + encodeURIComponent(row.id), { method: 'DELETE' });
+    $('opsPageMsg').textContent = r.ok ? '已删除' : '删除失败';
+    await load();
+  }
+  await load();
+}
+async function renderRoomsPage() {
+  const r = await api('/api/ops/rooms');
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'name', label: '机房' }, { key: 'hosts', label: '纳管主机', cls: 'num' },
+    { key: 'monitored', label: '有快照', cls: 'num' },
+    { key: 'regions', label: '地域', render: row => (row.regions || []).join('、') || '—' },
+    { key: 'names', label: '主机清单', render: row => (row.names || []).join('、') || '—' },
+  ], r.rows, '纳管主机尚未填写机房字段。请到左侧主机列表编辑「机房」。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 个机房 · ' + r.note;
+}
+async function renderHostsPage() {
+  const r = await api('/api/workbench/assets');
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host', label: '主机' }, { key: 'ip', label: '地址' },
+    { key: 'region', label: '地域' }, { key: 'room', label: '机房' },
+    { key: 'biz_line', label: '业务线' }, { key: 'app_level', label: '应用等级' },
+    { key: 'org', label: '组织' }, { key: 'maintenance', label: '维保' },
+    { key: 'monitored', label: '监控', render: row => opsBadge(row.monitored,
+        row.monitored === '是' ? 'ok' : 'warn') },
+  ], r.rows, '尚未纳管主机。请先到左侧主机列表添加。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 台 · ' + r.note;
+}
+async function renderInspectionPage() {
+  const r = await api('/api/ops/inspection?' + wbWindowQuery());
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host', label: '主机' }, { key: 'ip', label: '地址' },
+    { key: 'cpu', label: 'CPU', render: row => row.cpu === null ? '—' : row.cpu + '%' },
+    { key: 'mem', label: '内存', render: row => row.mem === null ? '—' : row.mem + '%' },
+    { key: 'disk', label: '磁盘', render: row => row.disk === null ? '—' : row.disk + '%' },
+    { key: 'net_errors', label: '网络错误', cls: 'num' },
+    { key: 'gpu_count', label: 'GPU', cls: 'num' },
+    { key: 'alerts', label: '窗口告警', cls: 'num' },
+    { key: 'conclusion', label: '巡检结论' }, { key: 'at', label: '采集时间' },
+  ], r.rows, '暂无采集快照。点仪表盘上方「采集监控数据」后再巡检。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 台有快照 · ' + r.note;
+}
+
+/* ---------- 监控告警 ---------- */
+async function renderMonitorPage() {
+  const [d, m] = await Promise.all([api('/api/ops/dashboard?' + wbWindowQuery()),
+    api('/api/workbench/metrics')]);
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host', label: '纳管主机' }, { key: 'region', label: '地域' },
+    { key: 'cpu', label: 'CPU', render: row => row.cpu === null ? '—' : row.cpu + '%' },
+    { key: 'mem', label: '内存', render: row => row.mem === null ? '—' : row.mem + '%' },
+    { key: 'disk', label: '磁盘', render: row => row.disk === null ? '—' : row.disk + '%' },
+    { key: 'net_errors', label: '网络错误', cls: 'num' },
+    { key: 'gpu', label: 'GPU 实测', render: row => row.gpu_count ?
+        (row.gpu_count + ' 张 · 利用率 ' + (row.gpu_util === null ? '—' : row.gpu_util + '%') +
+         ' · 显存 ' + (row.gpu_mem_util === null ? '—' : row.gpu_mem_util + '%') +
+         ' · 功耗 ' + (row.gpu_power === null ? '—' : row.gpu_power + 'W')) : '该机无 GPU' },
+    { key: 'at', label: '采集时间' },
+  ], m.rows, '暂无监控快照。请点仪表盘「采集监控数据」。'));
+  $('opsPageMsg').textContent = '监控覆盖 ' + d.coverage + '% · 窗口告警 ' + d.alerts +
+    ' 条 · GPU 为有 nvidia-smi 时的真实读数；显示「该机无 GPU」即采集结果为空，不是缺失。';
+}
+async function renderAlertEventsPage() {
+  const r = await api('/api/workbench/alerts?page=1&size=50&' + wbWindowQuery());
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'time', label: '时间' },
+    { key: 'level', label: '级别', render: row => opsBadge(row.level,
+        row.level === '严重' ? 'hi' : 'warn') },
+    { key: 'resource', label: '资源' }, { key: 'host', label: '主机' },
+    { key: 'region', label: '地域' }, { key: 'metric', label: '指标' },
+    { key: 'value', label: '当前值' }, { key: 'message', label: '告警内容' },
+  ], r.rows, '该时间窗内没有采集告警；不代表主机健康，请核对是否已有采集快照。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 条 · ' + r.note;
+}
+async function renderAlertPolicyPage(templateOnly) {
+  const cfg = await api('/api/ops/alert/config');
+  const box = el('div', 'ops-settings');
+  const defs = [
+    ['cpu', 'CPU 使用率阈值（%）', cfg.thresholds.cpu],
+    ['mem', '内存使用率阈值（%）', cfg.thresholds.mem],
+    ['disk', '磁盘使用率阈值（%）', cfg.thresholds.disk],
+    ['net', '网络错误增量阈值（次）', cfg.thresholds.net],
+  ];
+  const inputs = {};
+  defs.forEach(d => {
+    const label = el('label', '', d[1]);
+    const input = el('input', '', ''); input.type = 'number';
+    input.min = '0'; input.max = d[0] === 'net' ? '1000' : '100';
+    input.step = d[0] === 'net' ? '1' : '0.5'; input.value = d[2];
+    inputs[d[0]] = input; label.appendChild(input); box.appendChild(label);
+  });
+  const lab = el('label', 'full', '告警消息模板（可用 {metric} {value} {host} {region} {level}）');
+  const tpl = el('textarea', '', cfg.template || ''); tpl.rows = 2;
+  lab.appendChild(tpl); box.appendChild(lab);
+  const actions = el('div', 'ops-settings-actions');
+  const save = opsBtn('保存告警策略', async () => {
+    const payload = { thresholds: {}, template: tpl.value, notifications: cfg.notifications || [] };
+    Object.keys(inputs).forEach(k => { payload.thresholds[k] = inputs[k].value; });
+    try {
+      const r = await jsonPost('/api/ops/alert/config', payload);
+      cfg.thresholds = r.thresholds; cfg.template = r.template;
+      $('opsPageMsg').textContent = '✅ 已保存。新阈值从下一次「采集监控数据」起参与判定。';
+      wbLog('保存告警策略');
+    } catch (e) { $('opsPageMsg').textContent = '❌ ' + e.message; }
+  }, 'primary');
+  actions.appendChild(save);
+  actions.appendChild(el('span', 'file-hint', '模板写错时系统自动回退到默认文案，不会导致采集失败。'));
+  box.appendChild(actions);
+  $('opsPageBody').appendChild(box);
+  $('opsPageMsg').textContent = cfg.note;
+  if (templateOnly) $('opsPageTip').textContent = cfg.note;
+}
+async function renderAggregatePage() {
+  const sel = el('select');
+  [['resource', '按资源'], ['host', '按主机'], ['region', '按地域'], ['level', '按级别']]
+    .forEach(x => { const o = el('option', '', x[1]); o.value = x[0]; sel.appendChild(o); });
+  $('opsPageTools').appendChild(el('span', '', '聚合维度'));
+  $('opsPageTools').appendChild(sel);
+  async function load() {
+    const r = await api('/api/ops/alert/aggregate?dimension=' + sel.value + '&' + wbWindowQuery());
+    $('opsPageBody').innerHTML = '';
+    $('opsPageBody').appendChild(opsTable([
+      { key: 'key', label: '聚合对象' }, { key: 'count', label: '告警数', cls: 'num' },
+      { key: 'severe', label: '严重', cls: 'num' },
+      { key: 'hosts', label: '涉及主机', render: row => (row.hosts || []).join('、') || '—' },
+      { key: 'latest', label: '最近时间' },
+    ], r.rows, '该时间窗内没有可聚合的采集告警。'));
+    $('opsPageMsg').textContent = r.window_label + ' · ' + r.note;
+  }
+  sel.onchange = load; await load();
+}
+async function renderNotificationsPage() {
+  let cfg = await api('/api/ops/alert/config');
+  const add = opsBtn('＋ 新增通知对象', () => opsOpenForm('notification', '', null), 'primary');
+  $('opsPageTools').appendChild(add);
+  async function load() {
+    cfg = await api('/api/ops/alert/config');
+    $('opsPageBody').innerHTML = '';
+    const rows = (cfg.notifications || []).map(n => ({
+      ...n, _op: null,
+    }));
+    $('opsPageBody').appendChild(opsTable([
+      { key: 'name', label: '名称' }, { key: 'type', label: '类型' },
+      { key: 'target', label: '通知对象' }, { key: 'note', label: '备注' },
+      { key: '_op', label: '操作', render: row => opsActions(
+        () => opsOpenForm('notification', '', row), async () => {
+          if (!confirm('删除通知对象「' + row.name + '」？')) return;
+          cfg.notifications = (cfg.notifications || []).filter(x => x.id !== row.id);
+          await jsonPost('/api/ops/alert/config', cfg); await load();
+        }) },
+    ], rows, '尚未配置通知对象。系统只登记，不会自动发送通知。'));
+    $('opsPageMsg').textContent = cfg.note;
+  }
+  await load();
+}
+async function renderAlertResourcesPage() {
+  const r = await api('/api/ops/alert/resources?' + wbWindowQuery());
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host', label: '纳管主机' }, { key: 'ip', label: '地址' },
+    { key: 'region', label: '地域' },
+    { key: 'monitored', label: '有快照', render: row => opsBadge(row.monitored,
+        row.monitored === '是' ? 'ok' : 'warn') },
+    { key: 'alerts', label: '窗口告警', cls: 'num' },
+    { key: 'collected_at', label: '最近采集' },
+  ], r.rows, '尚未纳管主机。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 台 · ' + r.window_label + ' · ' + r.note;
+}
+
+/* ---------- 日志中心 ---------- */
+async function renderLogManagePage() {
+  if (!OPS.logMeta) OPS.logMeta = await api('/api/ops/logs/meta');
+  $('opsPageTools').appendChild(opsBtn('＋ 新增日志源', () => opsOpenForm('logsource', '', null), 'primary'));
+  const r = await api('/api/ops/logs/sources');
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host_name', label: '纳管主机' }, { key: 'path', label: '绝对路径' },
+    { key: 'category', label: '分类', render: row => {
+        const c = (OPS.logMeta.categories || []).find(x => x.key === row.category);
+        return c ? c.label : row.category; } },
+    { key: 'keyword', label: '告警关键词' }, { key: 'lines', label: '行数', cls: 'num' },
+    { key: 'enabled', label: '状态', render: row => opsBadge(row.enabled ? '启用' : '停用',
+        row.enabled ? 'ok' : 'warn') },
+    { key: '_op', label: '操作', render: row => opsActions(
+        () => opsOpenForm('logsource', '', row), async () => {
+          if (!confirm('删除日志源「' + row.path + '」及其采集记录？')) return;
+          await api('/api/ops/logs/sources/' + encodeURIComponent(row.id), { method: 'DELETE' });
+          $('opsPageMsg').textContent = '已删除日志源与对应采集记录';
+          await wbSelectPage('log_manage');
+        }) },
+  ], r.rows, '尚未配置日志源。请先在左侧主机列表添加主机，再新增其上的日志路径。'));
+  $('opsPageMsg').textContent = '共 ' + r.total + ' 个日志源 · ' + r.note;
+}
+async function renderLogCollectPage() {
+  const r = await api('/api/ops/logs/sources');
+  $('opsPageTools').appendChild(opsBtn('⇩ 采集全部', async () => {
+    $('opsPageMsg').textContent = '正在从纳管主机只读 tail 日志…';
+    try {
+      const res = await jsonPost('/api/ops/logs/collect', {});
+      const bad = (res.results || []).filter(x => !x.ok).map(x => x.path + ': ' + x.error);
+      $('opsPageMsg').textContent = '采集完成 ' + res.success + '/' + res.total +
+        ' · ' + res.at + (bad.length ? (' · 失败：' + bad.join('；')) : '');
+      wbLog('采集日志中心日志');
+    } catch (e) { $('opsPageMsg').textContent = '采集失败：' + e.message; }
+  }, 'primary'));
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'host_name', label: '纳管主机' }, { key: 'path', label: '路径' },
+    { key: 'category', label: '分类' }, { key: 'enabled', label: '启用',
+      render: row => row.enabled ? '是' : '否' },
+    { key: '_op', label: '操作', render: row => opsActions(null, null,
+        () => {}) },
+  ], r.rows, '尚未配置日志源，无法采集。'));
+  // 每行单独采集按钮（避免把按钮混进删除列）
+  const table = $('opsPageBody').querySelector('table');
+  Array.from(table.querySelectorAll('tbody tr')).forEach((tr, i) => {
+    const row = r.rows[i]; if (!row) return;
+    const td = tr.lastElementChild; td.innerHTML = '';
+    td.appendChild(opsBtn('采集此源', async () => {
+      $('opsPageMsg').textContent = '正在采集 ' + row.path + '…';
+      try {
+        const res = await jsonPost('/api/ops/logs/collect', { source_id: row.id });
+        $('opsPageMsg').textContent = '结果：' + JSON.stringify(res.results || []) +
+          ' · ' + res.note;
+      } catch (e) { $('opsPageMsg').textContent = '采集失败：' + e.message; }
+    }));
+  });
+  $('opsPageMsg').textContent = '采集只执行 tail；失败原因会如实展示，不补造日志。';
+}
+async function renderLogQueryPage(fixedCategory, withFilter) {
+  const kw = el('input', '', ''); kw.type = 'text'; kw.placeholder = '关键词 / 主机 / 路径';
+  const level = el('select');
+  [['', '全部级别'], ['ERROR', 'ERROR'], ['WARN', 'WARN'], ['INFO', 'INFO'], ['其他', '其他']]
+    .forEach(x => { const o = el('option', '', x[1]); o.value = x[0]; level.appendChild(o); });
+  let catSel = null;
+  if (withFilter) {
+    if (!OPS.logMeta) OPS.logMeta = await api('/api/ops/logs/meta');
+    catSel = el('select');
+    const all = el('option', '', '全部分类'); all.value = ''; catSel.appendChild(all);
+    (OPS.logMeta.categories || []).forEach(c => {
+      const o = el('option', '', c.label); o.value = c.key; catSel.appendChild(o);
+    });
+    $('opsPageTools').appendChild(catSel);
+  }
+  $('opsPageTools').appendChild(kw); $('opsPageTools').appendChild(level);
+  $('opsPageTools').appendChild(opsBtn('查询', () => load()));
+  async function load() {
+    const q = 'keyword=' + encodeURIComponent(kw.value || '') +
+      '&level=' + encodeURIComponent(level.value) +
+      '&category=' + encodeURIComponent(fixedCategory || (catSel ? catSel.value : '')) +
+      '&limit=200';
+    const r = await api('/api/ops/logs/query?' + q);
+    $('opsPageBody').innerHTML = '';
+    $('opsPageBody').appendChild(opsTable([
+      { key: 'time', label: '采集时间' }, { key: 'host', label: '主机' },
+      { key: 'path', label: '日志路径' },
+      { key: 'level', label: '级别', render: row => opsBadge(row.level,
+          row.level === 'ERROR' ? 'hi' : row.level === 'WARN' ? 'warn' : 'ok') },
+      { key: 'trace', label: '链路标识' },
+      { key: 'line', label: '日志原文' },
+    ], r.rows, '没有匹配的日志。请先配置日志源并执行「日志采集」。'));
+    $('opsPageMsg').textContent = '命中 ' + r.total + ' 条 · ' + r.note;
+  }
+  await load();
+}
+async function renderLogAlertsPage() {
+  const r = await api('/api/ops/logs/stats');
+  $('opsPageBody').appendChild(opsTable([
+    { key: 'time', label: '最近命中' }, { key: 'keyword', label: '配置关键词' },
+    { key: 'host', label: '纳管主机' }, { key: 'path', label: '日志路径' },
+    { key: 'count', label: '命中行数', cls: 'num' },
+    { key: 'sample', label: '命中原文示例' },
+  ], r.alerts, '没有日志告警：需在日志源中填写关键词并采集到真实日志后才会出现。'));
+  $('opsPageMsg').textContent = '共采集 ' + r.total + ' 行 · 级别分布 ' +
+    JSON.stringify(r.levels || {}) + ' · ' + r.note;
+}
+async function renderLogTracesPage() {
+  const kw = el('input', '', ''); kw.type = 'text'; kw.placeholder = '链路标识 / 关键词';
+  $('opsPageTools').appendChild(kw);
+  $('opsPageTools').appendChild(opsBtn('查询', () => load()));
+  async function load() {
+    const r = await api('/api/ops/logs/traces?keyword=' + encodeURIComponent(kw.value || ''));
+    $('opsPageBody').innerHTML = '';
+    $('opsPageBody').appendChild(opsTable([
+      { key: 'trace', label: '链路标识' }, { key: 'count', label: '日志行数', cls: 'num' },
+      { key: 'hosts', label: '涉及主机', render: row => (row.hosts || []).join('、') },
+      { key: 'latest', label: '最近时间' }, { key: 'sample', label: '原文示例' },
+    ], r.rows, '暂无链路数据：需在日志源配置提取正则并采集到匹配日志。'));
+    $('opsPageMsg').textContent = '共 ' + r.total + ' 条链路 · ' + r.note;
+  }
+  await load();
+}
+
+/* ---------- 通用录入弹窗：资产台账 / 日志源 / 通知对象 ---------- */
+async function opsOpenForm(kind, category, row) {
+  if (window.OpsExt && (kind.startsWith('db_') || kind === 'domain')) {
+    return window.OpsExt.openForm(kind, row);
+  }
+  if (kind === 'catalog') {
+    // 冷启动直接进「数据库资产 / 应用管理」等页面时 meta 尚未加载，按钮点击不能再静默失败。
+    try {
+      await ensureCatalogMeta();
+    } catch (e) {
+      $('opsPageMsg').textContent = '❌ 台账字段读取失败：' + e.message;
+      return;
+    }
+  }
+  const box = $('opsRecordFields'); box.innerHTML = '';
+  $('opsRecordMsg').textContent = '';
+  let defs = [];
+  if (kind === 'catalog') {
+    const meta = (OPS.catalogMeta.categories || []).find(c => c.key === category);
+    defs = (meta ? meta.fields : []).map(k => k.key === 'host_id' ? ({
+      key: k.key, label: k.label, type: 'select',
+      options: [{ value: '', label: '不关联' }].concat(
+        S.hosts.map(h => ({ value: h.id, label: h.name })))
+    }) : ({ key: k.key, label: k.label }));
+    $('opsRecordTitle').textContent = (row ? '编辑' : '新增') + OPS_PAGES[OPS.page].title;
+    $('opsRecordTip').textContent = meta && meta.tip ? meta.tip : '台账字段全部来自你的输入。';
+  } else if (kind === 'logsource') {
+    defs = [
+      { key: 'host_id', label: '纳管主机', type: 'select',
+        options: S.hosts.map(h => ({ value: h.id, label: h.name })), required: true },
+      { key: 'path', label: '日志绝对路径', placeholder: '/var/log/messages', required: true },
+      { key: 'category', label: '日志分类', type: 'select',
+        options: ((OPS.logMeta || {}).categories || []).map(c =>
+          ({ value: c.key, label: c.label })) },
+      { key: 'keyword', label: '告警关键词', placeholder: 'ERROR 或 timeout', full: true },
+      { key: 'trace_pattern', label: '链路提取正则', placeholder: '(trace[=:]([a-z0-9-]+))',
+        tip: '正确写法：(trace[=:]([a-z0-9-]+))；留空则不提取链路标识，不影响日志采集。',
+        full: true },
+      { key: 'lines', label: '每次采集行数', type: 'number', value: '200' },
+      { key: 'enabled', label: '启用', type: 'checkbox', value: true },
+    ];
+    $('opsRecordTitle').textContent = (row ? '编辑' : '新增') + '日志源';
+    $('opsRecordTip').textContent = '路径必须是该主机上的 Linux 绝对路径；口令不能写在这里。';
+  } else {
+    defs = [
+      { key: 'name', label: '名称', required: true },
+      { key: 'type', label: '类型', placeholder: '邮件 / 企业微信 / Webhook' },
+      { key: 'target', label: '通知对象', placeholder: '仅登记对象，不发送' },
+      { key: 'note', label: '备注', full: true },
+    ];
+    $('opsRecordTitle').textContent = (row ? '编辑' : '新增') + '通知对象';
+    $('opsRecordTip').textContent = '不接收口令或 Webhook 密钥，系统也不会自动发送通知。';
+  }
+  const inputs = {};
+  defs.forEach(d => {
+    const lab = el('label', d.full ? 'full' : '');
+    lab.appendChild(el('span', '', d.label + (d.required ? ' *' : '')));
+    let input;
+    if (d.type === 'select') {
+      input = el('select');
+      (d.options || []).forEach(o => {
+        const opt = el('option', '', o.label); opt.value = o.value; input.appendChild(opt);
+      });
+    } else if (d.type === 'checkbox') {
+      input = el('input', '', ''); input.type = 'checkbox';
+    } else if (d.type === 'textarea') {
+      input = el('textarea', '', ''); input.rows = 3;
+    } else {
+      input = el('input', '', '');
+      input.type = d.type || 'text';
+      if (d.placeholder) input.placeholder = d.placeholder;
+    }
+    const val = row && row[d.key] !== undefined ? row[d.key] : d.value;
+    if (d.type === 'checkbox') input.checked = !!val;
+    else input.value = val === undefined || val === null ? '' : String(val);
+    inputs[d.key] = input; lab.appendChild(input);
+    if (d.tip) lab.appendChild(el('small', 'field-tip', d.tip));
+    box.appendChild(lab);
+  });
+  OPS.form = { kind, category, row, defs, inputs };
+  openModal('modalOpsRecord');
+}
+$('opsRecordSave').onclick = async () => {
+  const f = OPS.form; if (!f) return;
+  const payload = {};
+  for (const d of f.defs) {
+    const input = f.inputs[d.key];
+    payload[d.key] = d.type === 'checkbox' ? input.checked : input.value.trim();
+    if (d.required && !payload[d.key]) {
+      $('opsRecordMsg').textContent = '请填写：' + d.label; return;
+    }
+  }
+  $('opsRecordMsg').textContent = '正在保存…';
+  try {
+    let r;
+    if (f.kind.startsWith('db_') || f.kind === 'domain') {
+      r = await window.OpsExt.saveForm(f, payload);
+      if (!r.ok) { $('opsRecordMsg').textContent = '❌ ' + (r.message || '保存失败'); return; }
+      $('opsRecordMsg').textContent = '✅ ' + (r.message || '已保存');
+      closeModal('modalOpsRecord');
+      wbLog('保存' + $('opsRecordTitle').textContent);
+      await wbSelectPage(OPS.page);
+      $('opsPageMsg').textContent = '✅ ' + (r.message || '已保存') + ' · 数据已同步到当前页面。';
+      return;
+    }
+    if (f.kind === 'catalog') {
+      payload.category = f.category;
+      if (f.row) payload.id = f.row.id;
+      r = await jsonPost('/api/ops/catalog', payload);
+    } else if (f.kind === 'logsource') {
+      if (f.row) payload.id = f.row.id;
+      r = await jsonPost('/api/ops/logs/sources', payload);
+    } else {
+      const cfg = await api('/api/ops/alert/config');
+      const list = (cfg.notifications || []).filter(n => n.id !== (f.row || {}).id);
+      list.push({ ...payload, id: (f.row || {}).id || uuidLite() });
+      r = await jsonPost('/api/ops/alert/config', {
+        thresholds: cfg.thresholds, template: cfg.template, notifications: list });
+    }
+    if (!r.ok) { $('opsRecordMsg').textContent = '❌ ' + (r.message || '保存失败'); return; }
+    closeModal('modalOpsRecord');
+    wbLog('保存' + $('opsRecordTitle').textContent);
+    await wbSelectPage(OPS.page);
+    $('opsPageMsg').textContent = '✅ ' + (r.message || '已保存') + ' · 数据已同步到当前页面。';
+  } catch (e) { $('opsRecordMsg').textContent = '❌ ' + e.message; }
+};
+function uuidLite() {
+  return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
 function wbRenderAssets(as) {
@@ -2304,16 +3142,18 @@ $('btnLogout').onclick = async () => {
   applyKeepalive();
   initLevelSelect();
   wbBindWindow();
+  bindWbNav();
   try {
     const me = await api('/api/auth/me');
     if (me && me.username) $('userTag').textContent = me.username;
     await api('/api/health');
     await loadState(false);
+    await loadAiTargets();
     if (S.hosts.length) {
       S.activeHost = S.hosts[0].id;
       $('selHost').value = S.activeHost;
       await loadState();
-      showEmptyTerm('已选中「' + S.hosts[0].name + '」。点击左侧该主机的「连接」按钮才会建立 SSH 会话。');
+      showEmptyTerm('已选中「' + S.hosts[0].name + '」。点击终端上方的「连接」按钮才会建立 SSH 会话。');
       setBadge('未连接', false);
     } else {
       showEmptyTerm();
